@@ -1,24 +1,58 @@
-using TWStockLib.Factory;
 using TWStockLib.Models;
 using TWStockLib.Observer;
-using TWStockLib.Strategy;
+using TWStockLib.Sources;
 
 namespace TWStockLib.Services
 {
-    public class StockMarketService
+    public class TWStockClient : ITWStockClient
     {
+        private readonly IEnumerable<IStockSource> _sources;
         private readonly StockPriceSubject _priceSubject;
-        private readonly IDataFetchStrategy _dataFetchStrategy;
+        private Dictionary<string, StockData> _stockCache;
 
-        public StockMarketService(IStockMarketFactory factory)
+        public TWStockClient(IEnumerable<IStockSource> sources)
         {
+            _sources = sources;
             _priceSubject = new StockPriceSubject();
-            _dataFetchStrategy = factory.CreateDataFetchStrategy();
+            _stockCache = new Dictionary<string, StockData>();
         }
 
-        public async Task<StockQuote> GetRealtimeQuote(string symbol, MarketType marketType)
+        private IStockSource GetSource(MarketType marketType)
         {
-            var quote = await _dataFetchStrategy.FetchRealtimeQuote(symbol, marketType);
+            return _sources.FirstOrDefault(s => s.Market == marketType) 
+                   ?? throw new ArgumentException($"No source found for market {marketType}");
+        }
+
+        private async Task<IStockSource> ResolveSourceAsync(string symbol)
+        {
+            if (_stockCache.TryGetValue(symbol, out var stock))
+            {
+                return GetSource(stock.Market);
+            }
+
+            if (_stockCache.Count == 0)
+            {
+                await GetAllStockListAsync();
+                if (_stockCache.TryGetValue(symbol, out stock))
+                {
+                    return GetSource(stock.Market);
+                }
+            }
+
+            return GetSource(MarketType.TSE);
+        }
+
+        public async Task<StockQuote> GetRealtimeQuoteAsync(string symbol)
+        {
+            var source = await ResolveSourceAsync(symbol);
+            var quote = await source.FetchRealtimeQuoteAsync(symbol);
+            
+            if (quote == null && source.Market == MarketType.TSE)
+            {
+                var otcSource = GetSource(MarketType.OTC);
+                quote = await otcSource.FetchRealtimeQuoteAsync(symbol);
+            }
+
             if (quote?.LastPrice.HasValue == true)
             {
                 _priceSubject.UpdatePrice(symbol, quote.LastPrice.Value);
@@ -26,47 +60,40 @@ namespace TWStockLib.Services
             return quote;
         }
 
-        public void SubscribePriceChanges(string symbol, IStockPriceObserver observer)
+        public async Task<IEnumerable<StockHistory>> GetHistoricalDataAsync(string symbol, DateTime startDate, DateTime endDate)
         {
-            _priceSubject.Subscribe(symbol, observer);
+            var source = await ResolveSourceAsync(symbol);
+            return await source.FetchHistoricalDataAsync(symbol, startDate, endDate);
         }
 
-        public void UnsubscribePriceChanges(string symbol, IStockPriceObserver observer)
+        public async Task<Dictionary<string, StockData>> GetStockListAsync(MarketType marketType, bool includeWarrant = false)
         {
-            _priceSubject.Unsubscribe(symbol, observer);
+            var source = GetSource(marketType);
+            var list = await source.FetchStockListAsync(includeWarrant);
+            
+            foreach (var kvp in list) _stockCache[kvp.Key] = kvp.Value;
+            
+            return list;
         }
 
-        public async Task<IEnumerable<StockHistory>> GetHistoricalData(
-            string symbol, 
-            DateTime startDate, 
-            DateTime endDate,
-            MarketType marketType)
-        {
-            return await _dataFetchStrategy.FetchHistoricalData(symbol, startDate, endDate, marketType);
-        }
-
-        public async Task<Dictionary<string, StockData>> GetStockList(MarketType marketType, bool includeWarrant = false)
-        {
-            return await _dataFetchStrategy.FetchStockList(marketType, includeWarrant);
-        }
-
-        public async Task<Dictionary<string, StockData>> GetAllStockList(bool includeWarrant = false)
+        public async Task<Dictionary<string, StockData>> GetAllStockListAsync(bool includeWarrant = false)
         {
             var result = new Dictionary<string, StockData>();
             
-            var tseList = await GetStockList(MarketType.TSE, includeWarrant);
-            foreach (var item in tseList)
+            foreach (var source in _sources)
             {
-                result[item.Key] = item.Value;
-            }
-            
-            var otcList = await GetStockList(MarketType.OTC, includeWarrant);
-            foreach (var item in otcList)
-            {
-                result[item.Key] = item.Value;
+                var list = await source.FetchStockListAsync(includeWarrant);
+                foreach (var item in list)
+                {
+                    result[item.Key] = item.Value;
+                    _stockCache[item.Key] = item.Value;
+                }
             }
             
             return result;
         }
+
+        public void SubscribeMonitor(string symbol, IStockPriceObserver observer) => _priceSubject.Subscribe(symbol, observer);
+        public void UnsubscribeMonitor(string symbol, IStockPriceObserver observer) => _priceSubject.Unsubscribe(symbol, observer);
     }
-} 
+}

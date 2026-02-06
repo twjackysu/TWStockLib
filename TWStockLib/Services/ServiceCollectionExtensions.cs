@@ -1,19 +1,28 @@
 using Microsoft.Extensions.DependencyInjection;
 using TWStockLib.Cache;
-using TWStockLib.Factory;
+using TWStockLib.Services;
+using TWStockLib.Sources;
 
-namespace TWStockLib.Services
+namespace TWStockLib
 {
     public static class ServiceCollectionExtensions
     {
-        public static IServiceCollection AddStockServices(this IServiceCollection services)
+        public static IServiceCollection AddTWStockClient(this IServiceCollection services)
         {
             services.AddHttpClient();
             services.AddMemoryCache();
+            
+            // Core Services
             services.AddSingleton<ICacheService, MemoryCacheService>();
-            services.AddSingleton<IStockMarketFactory, TwseMarketFactory>();
-            services.AddScoped<StockMarketService>();
+            
+            // Sources
+            services.AddSingleton<IStockSource, TwseSource>();
+            services.AddSingleton<IStockSource, TpexSource>();
+            
+            // Client
+            services.AddSingleton<ITWStockClient, TWStockClient>();
+            
             return services;
         }
     }
-} 
+}

@@ -1,7 +1,6 @@
-namespace TWStockLib.Observer
+namespace TWStockLib.Observer;
+
+public interface IStockPriceObserver
 {
-    public interface IStockPriceObserver
-    {
-        void OnPriceChanged(string symbol, decimal newPrice, decimal oldPrice);
-    }
-} 
+    void OnPriceChanged(string symbol, decimal newPrice, decimal oldPrice);
+}

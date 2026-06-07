@@ -1,0 +1,18 @@
+<Project>
+
+  <!--
+    本檔在各 csproj 之後匯入，此時 IsPackable 已就緒，
+    可正確套用「僅可打包專案」的設定。
+  -->
+
+  <!--
+    註：GenerateDocumentationFile 須在 csproj PropertyGroup 設定（SDK 由它推導
+    DocumentationFile，時機早於本檔），故放在各 csproj，不放這裡。
+  -->
+
+  <!-- SourceLink：發佈時帶原始碼除錯資訊 -->
+  <ItemGroup Condition="'$(IsPackable)' == 'true'">
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+  </ItemGroup>
+
+</Project>

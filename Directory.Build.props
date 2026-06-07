@@ -25,9 +25,10 @@
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
 
-  <!-- SourceLink 只加到可打包專案 -->
-  <ItemGroup Condition="'$(IsPackable)' == 'true'">
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
-  </ItemGroup>
+  <!--
+    註：IsPackable 由各 csproj 設定，於本檔（Directory.Build.props，最早匯入）尚不可見，
+    因此「僅可打包專案」的設定（XML 文件、SourceLink）改放在 Directory.Build.targets
+    （最後匯入，IsPackable 已就緒）。
+  -->
 
 </Project>

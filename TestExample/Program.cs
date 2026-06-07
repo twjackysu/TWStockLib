@@ -33,26 +33,29 @@ namespace TestExample
 
                     // 獲取股票清單
                     logger.Info("獲取股票清單...");
-                    var allStocks = await stockMarketService.GetAllStockList();
+                    var allStocksResult = await stockMarketService.GetAllStockListAsync();
+                    var allStocks = allStocksResult.IsSuccess
+                        ? allStocksResult.Value
+                        : new Dictionary<string, StockData>();
                     logger.Info($"總共獲取到 {allStocks.Count} 支股票");
 
                     // 獲取歷史數據 006208
                     logger.Info("獲取歷史數據...");
-                    var tseHistory = await stockMarketService.GetHistoricalData(
-                        "006208", 
-                        new DateTime(2019, 11, 1), 
+                    var tseHistory = await stockMarketService.GetHistoricalDataAsync(
+                        "006208",
+                        new DateTime(2019, 11, 1),
                         new DateTime(2019, 11, 30),
                         MarketType.TSE);
-                    logger.Info($"006208 歷史數據: {tseHistory.Count()} 筆");
+                    logger.Info($"006208 歷史數據: {tseHistory.Value?.Count ?? 0} 筆");
 
                     // 獲取歷史數據 00687B
                     logger.Info("嘗試獲取 00687B 的歷史數據...");
-                    var otcHistory = await stockMarketService.GetHistoricalData(
-                        "00687B", 
-                        new DateTime(2023, 11, 1), 
+                    var otcHistory = await stockMarketService.GetHistoricalDataAsync(
+                        "00687B",
+                        new DateTime(2023, 11, 1),
                         new DateTime(2023, 11, 30),
                         MarketType.OTC);
-                    logger.Info($"00687B 歷史數據: {otcHistory.Count()} 筆");
+                    logger.Info($"00687B 歷史數據: {otcHistory.Value?.Count ?? 0} 筆");
                     
                     // 獲取即時報價
                     logger.Info("獲取即時報價...");
@@ -81,14 +84,15 @@ namespace TestExample
                             ? stock.Market 
                             : MarketType.TSE;
                             
-                        var quote = await stockMarketService.GetRealtimeQuote(symbol, marketType);
-                        if (quote != null)
+                        var quoteResult = await stockMarketService.GetRealtimeQuoteAsync(symbol, marketType);
+                        if (quoteResult.IsSuccess)
                         {
+                            var quote = quoteResult.Value;
                             logger.Info($"{symbol} {quote.Name} 目前價格: {quote.LastPrice}");
                         }
                         else
                         {
-                            logger.Warn($"{symbol} 無法獲取報價");
+                            logger.Warn($"{symbol} 無法獲取報價: {quoteResult.ErrorMessage}");
                         }
                     }
                 }

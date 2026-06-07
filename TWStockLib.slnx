@@ -1,4 +1,9 @@
 <Solution>
-  <Project Path="TestExample/TestExample.csproj" />
-  <Project Path="TWStockLib/TWStockLib.csproj" />
+  <Folder Name="/src/">
+    <Project Path="src/TWStockLib.Core/TWStockLib.Core.csproj" />
+    <Project Path="src/TWStockLib.Twse/TWStockLib.Twse.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="TestExample/TestExample.csproj" />
+  </Folder>
 </Solution>

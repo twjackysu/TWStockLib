@@ -6,6 +6,7 @@ using Newtonsoft.Json.Linq;
 using System.Text;
 using TWStockLib.Cache;
 using TWStockLib.Models;
+using TWStockLib.Twse.Internal;
 
 namespace TWStockLib.Strategy
 {
@@ -288,39 +289,4 @@ namespace TWStockLib.Strategy
         }
         #endregion
     }
-
-    #region API Models
-    public class TWSEAPIModel
-    {
-        public string stat { get; set; }
-        public string date { get; set; }
-        public string title { get; set; }
-        public List<string> fields { get; set; }
-        public List<List<string>> data { get; set; }
-        public List<string> notes { get; set; }
-    }
-    
-    public class TPEXAPIModel
-    {
-        public List<Table> tables { get; set; }
-        public string date { get; set; }
-        public string code { get; set; }
-        public string name { get; set; }
-        public bool showListPriceNote { get; set; }
-        public bool showListPriceLink { get; set; }
-        public string stat { get; set; }
-
-        public class Table
-        {
-            public string title { get; set; }
-            public string subtitle { get; set; }
-            public string date { get; set; }
-            public List<List<string>> data { get; set; }
-            public List<string> fields { get; set; }
-            public List<string> notes { get; set; }
-            public int totalCount { get; set; }
-            public List<string> summary { get; set; }
-        }
-    }
-    #endregion
-} 
+}

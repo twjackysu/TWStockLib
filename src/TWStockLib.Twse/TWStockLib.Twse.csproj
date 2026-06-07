@@ -2,28 +2,31 @@
 
   <PropertyGroup>
     <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
+    <RootNamespace>TWStockLib</RootNamespace>
 
-    <!-- 套件專屬資訊（共用部分見 ..\Directory.Build.props） -->
+    <!-- 保留原有 NuGet 套件名 TWStockLib：現有使用者 `dotnet add package TWStockLib`
+         照常可用，並自動帶入 TWStockLib.Core。組件名為 TWStockLib.Twse。 -->
     <IsPackable>true</IsPackable>
     <PackageId>TWStockLib</PackageId>
-    <Version>1.0.0</Version>
-    <Description>台灣股票類別庫</Description>
+    <Version>1.1.0</Version>
+    <Description>台灣股票類別庫 — 證交所（TSE）/ 櫃買（OTC）資料來源實作。</Description>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="AngleSharp" Version="[1.1.2,)" />
-    <PackageReference Include="DotnetSdkUtilities" Version="[1.0.5,)" />
-    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="[8.0.1,)" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="[8.0.0,)" />
-    <PackageReference Include="Microsoft.Extensions.Http" Version="[8.0.0,)" />
-    <PackageReference Include="Microsoft.Extensions.Logging" Version="[8.0.0,)" />
-    <PackageReference Include="Newtonsoft.Json" Version="[13.0.3,)" />
-    <PackageReference Include="System.Text.Encoding.CodePages" Version="[8.0.0,)" />
-    <PackageReference Include="System.ValueTuple" Version="[4.5.0,)" />
+    <ProjectReference Include="..\TWStockLib.Core\TWStockLib.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\README.md" Pack="true" PackagePath="\" />
+    <PackageReference Include="AngleSharp" Version="[1.1.2,)" />
+    <PackageReference Include="DotnetSdkUtilities" Version="[1.0.5,)" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="[8.0.0,)" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="[8.0.0,)" />
+    <PackageReference Include="Newtonsoft.Json" Version="[13.0.3,)" />
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="[8.0.0,)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 </Project>

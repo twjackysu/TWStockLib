@@ -29,7 +29,7 @@ namespace TestExample
                 var servicesProvider = BuildDi(config);
                 using (servicesProvider as IDisposable)
                 {
-                    var stockMarketService = servicesProvider.GetRequiredService<StockMarketService>();
+                    var stockMarketService = servicesProvider.GetRequiredService<IStockMarketService>();
 
                     // 獲取股票清單
                     logger.Info("獲取股票清單...");
@@ -121,7 +121,7 @@ namespace TestExample
             });
             
             // 添加股票服務
-            services.AddStockServices();
+            services.AddTwStock();
             
             return services.BuildServiceProvider();
         }

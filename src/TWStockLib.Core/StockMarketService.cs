@@ -5,7 +5,7 @@ using TWStockLib.Strategy;
 
 namespace TWStockLib.Services
 {
-    public class StockMarketService
+    public class StockMarketService : IStockMarketService
     {
         private readonly StockPriceSubject _priceSubject;
         private readonly IDataFetchStrategy _dataFetchStrategy;

@@ -7,7 +7,7 @@
     <!-- 套件專屬資訊（共用部分見 ..\..\Directory.Build.props） -->
     <IsPackable>true</IsPackable>
     <PackageId>TWStockLib.Core</PackageId>
-    <Version>1.1.0</Version>
+    <Version>2.0.0</Version>
     <Description>TWStockLib 核心抽象與模型（無 TWSE 來源依賴）。</Description>
   </PropertyGroup>
 

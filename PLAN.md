@@ -70,7 +70,7 @@
 
 - [ ] 更新 `README.md`：對齊新 API（`AddTwStock`、`StockResult<T>`、async/ct），修掉 `CreatePriceObserver` 等不存在的範例。
 - [ ] `DESIGN.md` 連入 README（設計模式總表就是「高大尚」觀感來源）。
-- [ ] 版本號訂為 `1.1.0`（API 有破壞性變更，主版號可考慮 `2.0.0`）。
+- [x] 版本號訂為 `2.0.0`（API 有破壞性變更，依 SemVer 跳大版號）。
 - [ ] 設定 GitHub repo secret `NUGET_API_KEY`。
 - [ ] 打 tag `v1.1.0` → 確認 publish workflow 成功推上 NuGet（Core + Twse 兩個套件）。
 

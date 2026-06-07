@@ -6,4 +6,8 @@
   <Folder Name="/samples/">
     <Project Path="TestExample/TestExample.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/TWStockLib.Core.Tests/TWStockLib.Core.Tests.csproj" />
+    <Project Path="tests/TWStockLib.Twse.Tests/TWStockLib.Twse.Tests.csproj" />
+  </Folder>
 </Solution>

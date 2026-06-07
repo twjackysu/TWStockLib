@@ -1,6 +1,9 @@
 using Microsoft.Extensions.DependencyInjection;
+using TWStockLib.Abstractions;
 using TWStockLib.Cache;
-using TWStockLib.Factory;
+using TWStockLib.Twse.DataSources;
+using TWStockLib.Twse.Http;
+using TWStockLib.Twse.Parsers;
 
 namespace TWStockLib.Services
 {
@@ -14,7 +17,14 @@ namespace TWStockLib.Services
             services.AddHttpClient();
             services.AddMemoryCache();
             services.AddSingleton<ICacheService, MemoryCacheService>();
-            services.AddSingleton<IStockMarketFactory, TwseMarketFactory>();
+
+            services.AddSingleton<IStockHttpFetcher, TwseHttpFetcher>();
+            services.AddSingleton<IStockParser, TwseStockParser>();
+
+            // 每市場一個資料來源；新增市場只多註冊一行（OCP）
+            services.AddSingleton<IStockDataSource, TwseStockDataSource>();
+            services.AddSingleton<IStockDataSource, TpexStockDataSource>();
+
             services.AddScoped<IStockMarketService, StockMarketService>();
             return services;
         }

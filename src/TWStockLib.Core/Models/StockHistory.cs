@@ -103,7 +103,7 @@ namespace TWStockLib.Models
             NumberOfDeals = 0;
         }
         
-        private uint ParseUInt32(string value)
+        private uint ParseUInt32(string? value)
         {
             if (string.IsNullOrEmpty(value) || value == "--" || value == "-")
                 return 0;
@@ -118,7 +118,7 @@ namespace TWStockLib.Models
             }
         }
         
-        private decimal ParseDecimal(string value)
+        private decimal ParseDecimal(string? value)
         {
             if (string.IsNullOrEmpty(value) || value == "--" || value == "-")
                 return 0;
@@ -148,7 +148,7 @@ namespace TWStockLib.Models
         /// <summary>收盤價</summary>
         public decimal ClosingPrice { get; set; }
         /// <summary>漲跌價差</summary>
-        public string DailyPricing { get; set; }
+        public string DailyPricing { get; set; } = "0";
         /// <summary>成交筆數</summary>
         public uint NumberOfDeals { get; set; }
     }

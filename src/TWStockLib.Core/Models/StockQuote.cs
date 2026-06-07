@@ -9,13 +9,13 @@ namespace TWStockLib.Models
         /// <summary>今日累積成交量</summary>
         public uint? TotalVolume { get; set; }
         /// <summary>最佳五檔賣出價格</summary>
-        public decimal[] Top5SellPrice { get; set; }
+        public decimal[] Top5SellPrice { get; set; } = [];
         /// <summary>最佳五檔賣出數量</summary>
-        public uint[] Top5SellVolume { get; set; }
+        public uint[] Top5SellVolume { get; set; } = [];
         /// <summary>最佳五檔買入價格</summary>
-        public decimal[] Top5BuyPrice { get; set; }
+        public decimal[] Top5BuyPrice { get; set; } = [];
         /// <summary>最佳五檔買入數量</summary>
-        public uint[] Top5BuyVolume { get; set; }
+        public uint[] Top5BuyVolume { get; set; } = [];
         /// <summary>最後Sync時間</summary>
         public DateTime? SyncTime { get; set; }
         /// <summary>最高價</summary>

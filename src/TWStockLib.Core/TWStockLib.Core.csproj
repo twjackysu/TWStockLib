@@ -6,6 +6,8 @@
 
     <!-- 套件專屬資訊（共用部分見 ..\..\Directory.Build.props） -->
     <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
     <PackageId>TWStockLib.Core</PackageId>
     <Version>2.0.0</Version>
     <Description>TWStockLib 核心抽象與模型（無 TWSE 來源依賴）。</Description>

@@ -7,6 +7,8 @@
     <!-- 保留原有 NuGet 套件名 TWStockLib：現有使用者 `dotnet add package TWStockLib`
          照常可用，並自動帶入 TWStockLib.Core。組件名為 TWStockLib.Twse。 -->
     <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
     <PackageId>TWStockLib</PackageId>
     <Version>2.0.0</Version>
     <Description>台灣股票類別庫 — 證交所（TSE）/ 櫃買（OTC）資料來源實作。</Description>

@@ -13,7 +13,7 @@ namespace TWStockLib.Cache
 
         public async Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan? expiry = null)
         {
-            if (_memoryCache.TryGetValue(key, out T cachedValue))
+            if (_memoryCache.TryGetValue(key, out T? cachedValue) && cachedValue is not null)
             {
                 return cachedValue;
             }

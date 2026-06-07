@@ -46,9 +46,9 @@ jobs:
       - name: Pack
         run: |
           VERSION=${{ steps.version.outputs.VERSION }}
-          dotnet pack TWStockLib/TWStockLib.csproj \
-            --no-build --configuration Release \
-            -p:PackageVersion=$VERSION --output ./nupkg
+          PACK_ARGS="--no-build --configuration Release -p:PackageVersion=$VERSION --output ./nupkg"
+          dotnet pack src/TWStockLib.Core/TWStockLib.Core.csproj $PACK_ARGS
+          dotnet pack src/TWStockLib.Twse/TWStockLib.Twse.csproj $PACK_ARGS
 
       - name: Push to NuGet
         run: >

@@ -21,7 +21,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\TWStockLib\TWStockLib.csproj" />
+    <ProjectReference Include="..\src\TWStockLib.Twse\TWStockLib.Twse.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,0 +1,33 @@
+<Project>
+
+  <!-- 全 solution 共用設定。個別專案可覆寫。 -->
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <!-- 共用的 NuGet 套件 metadata（僅 IsPackable 的專案會用到） -->
+  <PropertyGroup>
+    <Authors>JackySu</Authors>
+    <Company>JackySu</Company>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/twjackysu/TWStockLib</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/twjackysu/TWStockLib</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>stock;taiwan;finance;twse;tpex</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+
+    <!-- SourceLink / symbols：發佈時帶原始碼除錯資訊 -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <!-- SourceLink 只加到可打包專案 -->
+  <ItemGroup Condition="'$(IsPackable)' == 'true'">
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+  </ItemGroup>
+
+</Project>

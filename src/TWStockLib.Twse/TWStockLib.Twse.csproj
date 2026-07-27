@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
     <RootNamespace>TWStockLib</RootNamespace>
 
     <!-- 保留原有 NuGet 套件名 TWStockLib：現有使用者 `dotnet add package TWStockLib`

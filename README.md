@@ -1,5 +1,10 @@
 # TWStockLib
 
+[![NuGet](https://img.shields.io/nuget/v/TWStockLib.svg)](https://www.nuget.org/packages/TWStockLib)
+[![NuGet Downloads](https://img.shields.io/nuget/dt/TWStockLib.svg)](https://www.nuget.org/packages/TWStockLib)
+[![CI](https://github.com/twjackysu/TWStockLib/actions/workflows/ci.yml/badge.svg)](https://github.com/twjackysu/TWStockLib/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/github/license/twjackysu/TWStockLib.svg)](LICENSE)
+
 TWStockLib 是一個用於獲取台灣股市資料的 .NET 類別庫，提供股票清單、歷史數據與即時報價，並支援價格變化的觀察者模式。
 
 - 全非同步、可取消（`async` + `CancellationToken`）

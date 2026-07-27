@@ -23,6 +23,7 @@ jobs:
           dotnet-version: |
             8.0.x
             9.0.x
+            10.0.x
 
       # tag 觸發時從 tag 擷取版本號（v1.1.0 → 1.1.0）；手動觸發時使用輸入值
       - name: Extract version

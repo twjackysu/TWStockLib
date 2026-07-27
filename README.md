@@ -6,7 +6,7 @@ TWStockLib 是一個用於獲取台灣股市資料的 .NET 類別庫，提供股
 - 統一以 `StockResult<T>` 回傳成功 / 失敗，呼叫端免到處 try-catch
 - 每個市場一個資料來源，新增市場零修改現有程式碼（OCP）
 - 純函式解析層（與 IO 分離），可離線單元測試
-- 支援 `net8.0` / `net9.0`
+- 支援 `net8.0` / `net9.0` / `net10.0`
 
 > 架構與設計模式說明見 [DESIGN.md](DESIGN.md)。
 

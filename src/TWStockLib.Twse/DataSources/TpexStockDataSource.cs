@@ -22,7 +22,7 @@ public sealed class TpexStockDataSource : TwseFamilyDataSourceBase
         string symbol, DateTime month, CancellationToken ct)
         => CachedMonth(symbol, month, async () =>
         {
-            var url = $"http://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock/st43_result.php?l=zh-tw&date={month:yyyy/MM/dd}&code={symbol}";
+            var url = $"https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock/st43_result.php?l=zh-tw&date={month:yyyy/MM/dd}&code={symbol}";
             var json = await Fetcher.GetStringAsync(url, ct);
             return Parser.ParseTpexHistory(json);
         });

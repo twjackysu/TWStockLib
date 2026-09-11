@@ -44,7 +44,7 @@ public abstract class TwseFamilyDataSourceBase : IStockDataSource
         return Cache.GetOrSetAsync(cacheKey, async () =>
         {
             var exCh = $"{MarketKeyPrefix}_{symbol}.tw";
-            var url = $"http://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={exCh}&json=1&delay=0&_={DateTime.UtcNow.Ticks}";
+            var url = $"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={exCh}&json=1&delay=0&_={DateTime.UtcNow.Ticks}";
             var json = await Fetcher.GetStringAsync(url, ct);
             return Parser.ParseRealtimeQuote(json, Market);
         }, QuoteTtl);

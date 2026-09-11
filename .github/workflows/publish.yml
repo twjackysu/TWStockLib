@@ -30,10 +30,13 @@ jobs:
         id: version
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+            INPUT="${{ github.event.inputs.version }}"
           else
-            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            INPUT="$GITHUB_REF_NAME"
           fi
+          # 兩條路都去掉開頭的 v：tag 規則是 v*，手動輸入時很自然會跟著打 v，
+          # 但 NuGet 的 PackageVersion 不接受前綴（v2.1.1 會讓 dotnet pack 直接失敗）。
+          echo "VERSION=${INPUT#v}" >> "$GITHUB_OUTPUT"
 
       - name: Restore
         run: dotnet restore

@@ -13,6 +13,15 @@ public interface IStockMarketService
     Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(
         string symbol, MarketType market, CancellationToken ct = default);
 
+    /// <summary>
+    /// 取得指定股票的即時報價；<paramref name="bypassCache"/> 為 <c>true</c> 時不使用函式庫內部的報價快取，
+    /// 一律向上游查詢（查到的新報價會更新快取）。呼叫端自己已有節流或需要最新值時使用。
+    /// 預設實作忽略此參數、等同上一個方法；<see cref="StockMarketService"/> 已覆寫。
+    /// </summary>
+    Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(
+        string symbol, MarketType market, bool bypassCache, CancellationToken ct = default)
+        => GetRealtimeQuoteAsync(symbol, market, ct);
+
     /// <summary>取得指定股票在日期區間內的歷史資料（以月為單位向上游查詢）。</summary>
     Task<StockResult<IReadOnlyList<StockHistory>>> GetHistoricalDataAsync(
         string symbol, DateTime startDate, DateTime endDate, MarketType market,

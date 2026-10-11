@@ -115,6 +115,20 @@ else
 }
 ```
 
+即時報價預設會在函式庫內快取 30 秒，同一檔股票在這段時間內重複查詢不會再打上游。
+呼叫端自己已有節流、或需要「這一刻」的值時，可以略過快取：
+
+```csharp
+// 略過內部快取、一律向證交所查詢；查到的新報價仍會更新快取，之後的一般呼叫會拿到它
+var fresh = await stock.GetRealtimeQuoteAsync("2330", MarketType.TSE, bypassCache: true);
+```
+
+> 上游端點（mis.twse.com.tw）本身有頻率限制，略過快取後的呼叫頻率由呼叫端負責。
+> 加權指數在 MIS 的代號是 `t00`，直接當作上市（`MarketType.TSE`）的一檔查即可：
+> `GetRealtimeQuoteAsync("t00", MarketType.TSE, bypassCache: true)`；`LastPrice` 是指數、
+> `YesterdayClosingPrice` 是昨收。盤前尚未有第一筆成交時 `LastPrice` 為 `null`。
+> `SyncTime` 是 `tlong` 換算成的 UTC 時間（`DateTimeKind.Unspecified`）。
+
 #### 使用觀察者模式監控價格變化
 
 ```csharp

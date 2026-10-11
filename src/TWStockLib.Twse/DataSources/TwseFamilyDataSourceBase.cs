@@ -39,6 +39,9 @@ public abstract class TwseFamilyDataSourceBase : IStockDataSource
     protected abstract int IsinStrMode { get; }
 
     public Task<StockQuote?> FetchRealtimeQuoteAsync(string symbol, CancellationToken ct = default)
+        => FetchRealtimeQuoteAsync(symbol, bypassCache: false, ct);
+
+    public Task<StockQuote?> FetchRealtimeQuoteAsync(string symbol, bool bypassCache, CancellationToken ct = default)
     {
         var cacheKey = $"realtime_quote_{Market}_{symbol}";
         return Cache.GetOrSetAsync(cacheKey, async () =>
@@ -47,7 +50,7 @@ public abstract class TwseFamilyDataSourceBase : IStockDataSource
             var url = $"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={exCh}&json=1&delay=0&_={DateTime.UtcNow.Ticks}";
             var json = await Fetcher.GetStringAsync(url, ct);
             return Parser.ParseRealtimeQuote(json, Market);
-        }, QuoteTtl);
+        }, QuoteTtl, bypassCache);
     }
 
     public async Task<IReadOnlyList<StockHistory>> FetchHistoricalDataAsync(

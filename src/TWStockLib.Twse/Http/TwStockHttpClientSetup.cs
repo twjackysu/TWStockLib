@@ -1,3 +1,4 @@
+using System.Net;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Http;
 using Microsoft.Extensions.Options;
@@ -32,6 +33,21 @@ internal sealed class TwStockHttpClientSetup(IOptions<TwStockOptions> twStockOpt
         {
             client.Timeout = DefaultTimeout;
             client.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
+        });
+
+        // OpenAPI 回應以 brotli 壓縮：上市權證基本資料解壓後約 45 MB，壓縮後不到 2 MB。只調整預設的 primary handler；
+        // 使用者之後以 ConfigurePrimaryHttpMessageHandler 換掉的 handler 照他的設定
+        options.HttpMessageHandlerBuilderActions.Add(builder =>
+        {
+            switch (builder.PrimaryHandler)
+            {
+                case HttpClientHandler { AutomaticDecompression: DecompressionMethods.None } handler:
+                    handler.AutomaticDecompression = DecompressionMethods.All;
+                    break;
+                case SocketsHttpHandler { AutomaticDecompression: DecompressionMethods.None } handler:
+                    handler.AutomaticDecompression = DecompressionMethods.All;
+                    break;
+            }
         });
     }
 

@@ -45,6 +45,25 @@ public class TwStockHttpClientTests
     }
 
     [Fact]
+    public void TheNamedClient_AcceptsCompressedResponses()
+    {
+        var services = new ServiceCollection().AddLogging().AddTwStock();
+        using var provider = services.BuildServiceProvider();
+
+        HttpMessageHandler handler = provider.GetRequiredService<IHttpMessageHandlerFactory>().CreateHandler(TwStockOptions.HttpClientName);
+        while (handler is DelegatingHandler delegating)
+            handler = delegating.InnerHandler!;
+
+        var decompression = handler switch
+        {
+            HttpClientHandler h => h.AutomaticDecompression,
+            SocketsHttpHandler h => h.AutomaticDecompression,
+            _ => throw new InvalidOperationException(handler.GetType().Name),
+        };
+        Assert.Equal(System.Net.DecompressionMethods.All, decompression);
+    }
+
+    [Fact]
     public void TheTimeout_CanBeChangedThroughTheNamedClient()
     {
         using var provider = Build(new FakeHttpMessageHandler(), services =>

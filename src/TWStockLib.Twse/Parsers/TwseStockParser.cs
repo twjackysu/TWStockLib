@@ -143,6 +143,77 @@ internal static class TwseStockParser
         return true;
     }
 
+    #region Stock List (OpenAPI)
+
+    /// <summary>
+    /// 證交所 OpenAPI 上市個股日成交資訊（<c>STOCK_DAY_ALL</c>）：前一個交易日每一檔有行情的上市證券
+    /// （股票、ETF、ETN、TDR、受益證券…），不含權證。只取代號與名稱。
+    /// </summary>
+    public static IReadOnlyDictionary<string, StockData> ParseTwseOpenApiStockList(string json, MarketType market)
+        => ParseOpenApiStockList(json, market, codeKey: "Code", nameKey: "Name", keep: null);
+
+    /// <summary>櫃買 OpenAPI 上櫃股票行情（<c>tpex_mainboard_daily_close_quotes</c>）：每一檔有行情的上櫃證券，含權證。</summary>
+    public static IReadOnlyDictionary<string, StockData> ParseTpexOpenApiStockList(string json, MarketType market)
+        => ParseOpenApiStockList(json, market, codeKey: "SecuritiesCompanyCode", nameKey: "CompanyName", keep: null);
+
+    /// <summary>
+    /// 證交所 OpenAPI 上市權證基本資料彙總表（<c>t187ap37_L</c>）：含已到期的權證（2026/10/22 約 4.5 萬筆中 6 千多筆），
+    /// 只留最後交易日（民國年 <c>yyyMMdd</c>）不早於 <paramref name="today"/> 的；最後交易日無法解析的保留，寧可多列也不漏掉。
+    /// </summary>
+    public static IReadOnlyDictionary<string, StockData> ParseTwseOpenApiWarrantList(string json, MarketType market, DateOnly today)
+        => ParseOpenApiStockList(json, market, codeKey: "權證代號", nameKey: "權證簡稱",
+            keep: item => !TryParseCompactRocDate(GetString(item, "最後交易日"), out var lastTradingDay) || lastTradingDay >= today);
+
+    /// <summary>
+    /// OpenAPI 清單都是物件陣列。空陣列視為上游異常（例如資料更新中）而拋出例外：清單會快取一整天，
+    /// 不能把一次空回應當成「沒有任何股票」快取起來。
+    /// </summary>
+    private static IReadOnlyDictionary<string, StockData> ParseOpenApiStockList(
+        string json, MarketType market, string codeKey, string nameKey, Func<JsonElement, bool>? keep)
+    {
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Array)
+            throw new FormatException($"OpenAPI 股票清單的回應不是陣列：{root.ValueKind}");
+        if (root.GetArrayLength() == 0)
+            throw new FormatException("OpenAPI 股票清單的回應是空的。");
+
+        var result = new Dictionary<string, StockData>(root.GetArrayLength());
+        foreach (var item in root.EnumerateArray())
+        {
+            var symbol = GetString(item, codeKey).Trim();
+            if (symbol.Length == 0 || (keep is not null && !keep(item)))
+                continue;
+
+            result[symbol] = new StockData { Symbol = symbol, Name = GetString(item, nameKey).Trim(), Market = market };
+        }
+
+        return result.ToFrozenDictionary();
+    }
+
+    /// <summary>解析「1160930」這類不含分隔符號的民國年日期（年 2～3 碼）。</summary>
+    private static bool TryParseCompactRocDate(string text, out DateOnly date)
+    {
+        date = default;
+        text = text.Trim();
+        if (text.Length is < 6 or > 7
+            || !int.TryParse(text.AsSpan(0, text.Length - 4), NumberStyles.None, CultureInfo.InvariantCulture, out var year)
+            || !int.TryParse(text.AsSpan(text.Length - 4, 2), NumberStyles.None, CultureInfo.InvariantCulture, out var month)
+            || !int.TryParse(text.AsSpan(text.Length - 2), NumberStyles.None, CultureInfo.InvariantCulture, out var day))
+        {
+            return false;
+        }
+
+        year += 1911;
+        if (month is < 1 or > 12 || day < 1 || day > DateTime.DaysInMonth(year, month))
+            return false;
+
+        date = new DateOnly(year, month, day);
+        return true;
+    }
+
+    #endregion
+
     #region History Rows
 
     private static IReadOnlyList<StockHistory> MapRows(JsonElement dataArray, int unitScale)

@@ -27,7 +27,7 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
     private readonly TimeProvider _timeProvider;
     private readonly TwStockOptions _options;
 
-    // 「不含權證」的檢視依完整清單的實例記住：同一份快取只過濾一次，快取換新後舊檢視跟著被回收
+    // 「不含權證」的檢視依含權證清單的實例記住：同一份快取只過濾一次，快取換新後舊檢視跟著被回收
     private readonly ConditionalWeakTable<IReadOnlyDictionary<string, StockData>, IReadOnlyDictionary<string, StockData>>
         _withoutWarrants = new();
 
@@ -139,27 +139,54 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
         return result.AsReadOnly();
     }
 
+    public Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(
+        bool includeWarrant = false, CancellationToken ct = default)
+        => FetchStockListAsync(new StockListOptions { IncludeWarrant = includeWarrant }, ct);
+
     /// <summary>
-    /// ISIN 頁面有數 MB，每個市場只下載、解析一次並快取完整清單（含權證）；
-    /// 是否排除權證在讀取時從同一份清單過濾，兩種查詢共用一次下載，同時發生的未命中也只下載一次。
+    /// 每個上游的清單各自快取（鍵 <c>stock_list_{上游}_{Market}</c>），同時發生的未命中只下載一次。
+    /// 含權證的清單只下載一次，不含權證的版本在讀取時依代號過濾。
     /// </summary>
     public async Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(
-        bool includeWarrant = false, CancellationToken ct = default)
+        StockListOptions options, CancellationToken ct = default)
     {
-        var cacheKey = $"stock_list_{Market}";
-        var all = await Cache.GetOrSetAsync(cacheKey, async token =>
+        switch (options.Source)
         {
-            var url = $"https://isin.twse.com.tw/isin/C_public.jsp?strMode={IsinStrMode}";
-            var html = await Fetcher.GetBig5StringAsync(url, token);
-            return TwseStockParser.ParseStockList(html, Market);
-        }, _options.StockListCacheDuration, ct);
-
-        return includeWarrant
-            ? all
-            : _withoutWarrants.GetValue(all, list => list
-                .Where(p => !IsWarrantSymbol(p.Key))
-                .ToFrozenDictionary());
+            case StockListSource.OpenApi:
+                return await FetchOpenApiStockListAsync(options.IncludeWarrant, ct);
+            case StockListSource.Isin:
+                // ISIN 頁面有數 MB，含權證，只下載、解析一次
+                var all = await CachedStockList($"stock_list_isin_{Market}", async token =>
+                {
+                    var url = $"https://isin.twse.com.tw/isin/C_public.jsp?strMode={IsinStrMode}";
+                    var html = await Fetcher.GetBig5StringAsync(url, token);
+                    return TwseStockParser.ParseStockList(html, Market);
+                }, ct);
+                return options.IncludeWarrant ? all : WithoutWarrants(all);
+            default:
+                throw new ArgumentOutOfRangeException(nameof(options), options.Source, $"不支援的清單來源：{options.Source}");
+        }
     }
+
+    /// <summary>從 OpenAPI 取得此市場的清單；端點與是否含權證的處理各市場不同。</summary>
+    protected abstract Task<IReadOnlyDictionary<string, StockData>> FetchOpenApiStockListAsync(
+        bool includeWarrant, CancellationToken ct);
+
+    /// <summary>以股票清單的快取時間快取；<paramref name="fetch"/> 收到的是合併並行查詢後共用的 token。</summary>
+    protected Task<IReadOnlyDictionary<string, StockData>> CachedStockList(
+        string cacheKey, Func<CancellationToken, Task<IReadOnlyDictionary<string, StockData>>> fetch, CancellationToken ct)
+        => Cache.GetOrSetAsync(cacheKey, fetch, _options.StockListCacheDuration, ct);
+
+    /// <summary>過濾掉權證；同一份清單只過濾一次。</summary>
+    protected IReadOnlyDictionary<string, StockData> WithoutWarrants(IReadOnlyDictionary<string, StockData> list)
+        => _withoutWarrants.GetValue(list, all => all
+            .Where(p => !IsWarrantSymbol(p.Key))
+            .ToFrozenDictionary());
+
+    /// <summary>台灣時間的今天。</summary>
+    protected DateOnly TaiwanToday => DateOnly.FromDateTime(TaiwanNow.DateTime);
+
+    private DateTimeOffset TaiwanNow => _timeProvider.GetUtcNow().ToOffset(TaiwanUtcOffset);
 
     /// <summary>取得單一月份的歷史資料（含快取），由子類別決定端點與解析方式。</summary>
     protected abstract Task<IReadOnlyList<StockHistory>> FetchMonthAsync(
@@ -182,7 +209,7 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
     /// </summary>
     private TimeSpan HistoryTtl(DateOnly month)
     {
-        var taiwanNow = _timeProvider.GetUtcNow().ToOffset(TaiwanUtcOffset);
+        var taiwanNow = TaiwanNow;
         var currentMonth = new DateOnly(taiwanNow.Year, taiwanNow.Month, 1);
         return new DateOnly(month.Year, month.Month, 1) < currentMonth
             ? _options.ClosedMonthHistoryCacheDuration

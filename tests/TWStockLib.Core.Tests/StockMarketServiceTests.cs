@@ -95,9 +95,9 @@ public class StockMarketServiceTests
     {
         var tse = FakeSource(MarketType.TSE);
         var otc = FakeSource(MarketType.OTC);
-        tse.FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        tse.FetchStockListAsync(Arg.Any<StockListOptions>(), Arg.Any<CancellationToken>())
            .Returns(new Dictionary<string, StockData>());
-        otc.FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        otc.FetchStockListAsync(Arg.Any<StockListOptions>(), Arg.Any<CancellationToken>())
            .Returns<IReadOnlyDictionary<string, StockData>>(_ => throw new HttpRequestException("boom"));
 
         var result = await BuildService(tse, otc).GetAllStockListAsync();
@@ -174,12 +174,12 @@ public class StockMarketServiceTests
     {
         var tse = FakeSource(MarketType.TSE);
         var otc = FakeSource(MarketType.OTC);
-        tse.FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        tse.FetchStockListAsync(Arg.Any<StockListOptions>(), Arg.Any<CancellationToken>())
            .Returns(new Dictionary<string, StockData>
            {
                ["2330"] = new() { Symbol = "2330", Name = "台積電", Market = MarketType.TSE },
            });
-        otc.FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        otc.FetchStockListAsync(Arg.Any<StockListOptions>(), Arg.Any<CancellationToken>())
            .Returns(new Dictionary<string, StockData>
            {
                ["6510"] = new() { Symbol = "6510", Name = "精測", Market = MarketType.OTC },
@@ -260,7 +260,7 @@ public class StockMarketServiceTests
               .Returns<StockQuote?>(ci => throw error(ci.Arg<CancellationToken>()));
         source.FetchHistoricalDataAsync(Arg.Any<string>(), Arg.Any<DateOnly>(), Arg.Any<DateOnly>(), Arg.Any<CancellationToken>())
               .Returns<IReadOnlyList<StockHistory>>(ci => throw error(ci.Arg<CancellationToken>()));
-        source.FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        source.FetchStockListAsync(Arg.Any<StockListOptions>(), Arg.Any<CancellationToken>())
               .Returns<IReadOnlyDictionary<string, StockData>>(ci => throw error(ci.Arg<CancellationToken>()));
         return source;
     }

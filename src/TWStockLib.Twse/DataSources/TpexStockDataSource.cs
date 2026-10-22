@@ -18,6 +18,18 @@ internal sealed class TpexStockDataSource(
     /// <summary>上櫃權證：6 碼，以 7 開頭，例如 700019、72479U。</summary>
     protected internal override bool IsWarrantSymbol(string symbol) => symbol.Length == 6 && symbol[0] == '7';
 
+    /// <summary>上櫃股票行情含權證，只下載一次（約 5 MB），不含權證的版本在讀取時過濾。</summary>
+    protected override async Task<IReadOnlyDictionary<string, StockData>> FetchOpenApiStockListAsync(
+        bool includeWarrant, CancellationToken ct)
+    {
+        var all = await CachedStockList($"stock_list_openapi_{Market}", async token =>
+        {
+            var json = await Fetcher.GetStringAsync("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes", token);
+            return TwseStockParser.ParseTpexOpenApiStockList(json, Market);
+        }, ct);
+        return includeWarrant ? all : WithoutWarrants(all);
+    }
+
     protected override Task<IReadOnlyList<StockHistory>> FetchMonthAsync(
         string symbol, DateOnly month, CancellationToken ct)
         => CachedMonth(symbol, month, async token =>

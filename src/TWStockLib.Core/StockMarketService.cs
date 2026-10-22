@@ -17,6 +17,8 @@ public sealed class StockMarketService : IStockMarketService
     /// <summary>MIS 約每 5 秒更新一次，追蹤得更頻繁只會增加被上游限流的風險。</summary>
     private static readonly TimeSpan MinimumWatchInterval = TimeSpan.FromSeconds(5);
 
+    private static readonly StockListOptions WithWarrants = new() { IncludeWarrant = true };
+
     /// <summary>台股代號最長 6 碼（權證、ETF），保留一些餘裕。</summary>
     private const int MaxSymbolLength = 10;
 
@@ -65,17 +67,44 @@ public sealed class StockMarketService : IStockMarketService
 
     public Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetStockListAsync(
         MarketType market, bool includeWarrant = false, CancellationToken ct = default)
-        => QueryAsync(market, "股票清單",
-            async source => await source.FetchStockListAsync(includeWarrant, ct), ct);
+        => GetStockListAsync(market, includeWarrant ? WithWarrants : StockListOptions.Default, ct);
+
+    public Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetStockListAsync(
+        MarketType market, StockListOptions options, CancellationToken ct = default)
+    {
+        ValidateStockListOptions(options);
+
+        return QueryAsync(market, "股票清單",
+            async source => await source.FetchStockListAsync(options, ct), ct);
+    }
+
+    public Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetAllStockListAsync(
+        bool includeWarrant = false, CancellationToken ct = default)
+        => GetAllStockListAsync(includeWarrant ? WithWarrants : StockListOptions.Default, ct);
+
+    public Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetAllStockListAsync(
+        StockListOptions options, CancellationToken ct = default)
+    {
+        ValidateStockListOptions(options);
+
+        return GetAllStockListCoreAsync(options, ct);
+    }
+
+    private static void ValidateStockListOptions(StockListOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (!Enum.IsDefined(options.Source))
+            throw new ArgumentOutOfRangeException(nameof(options), options.Source, $"不支援的清單來源：{options.Source}");
+    }
 
     /// <summary>依序查詢每個市場；任一市場失敗就回傳該市場的失敗結果。</summary>
-    public async Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetAllStockListAsync(
-        bool includeWarrant = false, CancellationToken ct = default)
+    private async Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetAllStockListCoreAsync(
+        StockListOptions options, CancellationToken ct)
     {
         var merged = new Dictionary<string, StockData>();
         foreach (var market in _sources.Keys)
         {
-            var result = await GetStockListAsync(market, includeWarrant, ct);
+            var result = await GetStockListAsync(market, options, ct);
             if (!result.IsSuccess)
                 return result;
 

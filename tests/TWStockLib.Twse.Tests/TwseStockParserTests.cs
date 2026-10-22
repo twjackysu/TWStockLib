@@ -311,4 +311,63 @@ public class TwseStockParserTests
         Assert.Equal(7, list.Count);
         Assert.Equal(new StockData { Symbol = "6510", Name = "精測", Market = MarketType.OTC }, list["6510"]);
     }
+
+    // ── 股票清單（OpenAPI）────────────────────────────────────────────────────
+
+    [Fact]
+    public void ParseTwseOpenApiStockList_MapsCodeAndName()
+    {
+        var list = TwseStockParser.ParseTwseOpenApiStockList(OpenApiFixtures.TwseStockDayAll, MarketType.TSE);
+
+        Assert.Equal(8, list.Count);
+        Assert.Equal(new StockData { Symbol = "00631L", Name = "元大台灣50正2", Market = MarketType.TSE }, list["00631L"]);
+        Assert.True(((ICollection<KeyValuePair<string, StockData>>)list).IsReadOnly);
+    }
+
+    [Fact]
+    public void ParseTpexOpenApiStockList_MapsCodeAndName_IncludingWarrants()
+    {
+        var list = TwseStockParser.ParseTpexOpenApiStockList(OpenApiFixtures.TpexDailyClose, MarketType.OTC);
+
+        Assert.Equal(6, list.Count);
+        Assert.Equal(new StockData { Symbol = "6510", Name = "精測", Market = MarketType.OTC }, list["6510"]);
+        Assert.Equal("擎亞群益5B售01", list["72479U"].Name);
+    }
+
+    [Theory]
+    [InlineData(2026, 10, 22, new[] { "030001", "03004T", "03080T", "03726B" })]
+    [InlineData(2026, 10, 23, new[] { "030001", "03004T", "03726B" })]          // 03080T 昨天最後交易
+    [InlineData(2026, 10, 14, new[] { "030001", "03001T", "03004T", "03080T", "03726B" })]
+    public void ParseTwseOpenApiWarrantList_KeepsWarrantsUntilTheirLastTradingDay(int year, int month, int day, string[] expected)
+    {
+        var list = TwseStockParser.ParseTwseOpenApiWarrantList(OpenApiFixtures.TwseWarrants, MarketType.TSE, new DateOnly(year, month, day));
+
+        Assert.Equal(expected, list.Keys.Order());
+    }
+
+    [Fact]
+    public void ParseTwseOpenApiWarrantList_AnUnreadableLastTradingDay_IsKept()
+    {
+        const string json = """[{"權證代號":"030001","權證簡稱":"友達台新6A購01","最後交易日":"N/A"}]""";
+
+        var list = TwseStockParser.ParseTwseOpenApiWarrantList(json, MarketType.TSE, new DateOnly(2026, 10, 22));
+
+        Assert.Equal(["030001"], list.Keys);
+    }
+
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("""{"stat":"OK","data":[]}""")]
+    public void ParseOpenApiStockLists_AnEmptyOrUnexpectedResponse_Throws_SoItIsNotCachedAsAnEmptyList(string json)
+    {
+        Assert.Throws<FormatException>(() => TwseStockParser.ParseTwseOpenApiStockList(json, MarketType.TSE));
+        Assert.Throws<FormatException>(() => TwseStockParser.ParseTpexOpenApiStockList(json, MarketType.OTC));
+    }
+
+    [Fact]
+    public void ParseOpenApiStockLists_AnHtmlErrorPage_IsAJsonError()
+    {
+        Assert.ThrowsAny<System.Text.Json.JsonException>(
+            () => TwseStockParser.ParseTwseOpenApiStockList("<html>系統忙碌中</html>", MarketType.TSE));
+    }
 }

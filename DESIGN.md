@@ -91,7 +91,8 @@ DataAnalysisLibrary 的精神只有兩條，套到本 lib：
 ```
 TWStockLib.slnx
 ├── Directory.Build.props / .targets      ← 共用 metadata / Nullable / LangVersion / SourceLink
-├── README.md / DESIGN.md
+├── README.md / CHANGELOG.md / MIGRATION.md / DESIGN.md
+├── docs/USAGE.md                       ← 使用說明（行為細節、設定、擴充）
 ├── src/
 │   ├── TWStockLib.Core/                   ← 無第三方 SDK 依賴（只靠 BCL + Microsoft.Extensions）
 │   │   ├── IStockMarketService.cs / StockMarketService.cs / StockMarketServiceExtensions.cs

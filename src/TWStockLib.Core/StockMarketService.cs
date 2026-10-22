@@ -19,6 +19,9 @@ public sealed class StockMarketService : IStockMarketService
 
     private static readonly StockListOptions WithWarrants = new() { IncludeWarrant = true };
 
+    /// <summary>判斷市場時依序查詢的清單：先不含權證，再含權證（見 <see cref="ResolveMarketsAsync"/>）。</summary>
+    private static readonly StockListOptions[] MarketDetectionPasses = [StockListOptions.Default, WithWarrants];
+
     /// <summary>台股代號最長 6 碼（權證、ETF），保留一些餘裕。</summary>
     private const int MaxSymbolLength = 10;
 
@@ -309,30 +312,39 @@ public sealed class StockMarketService : IStockMarketService
     }
 
     /// <summary>
-    /// 依各市場的完整股票清單（含權證；內建來源與 <see cref="GetStockListAsync"/> 共用同一份快取）判斷每一檔的市場。
-    /// 依註冊順序逐一取得清單，全部找到就停，因此只查上市股票時不必下載上櫃清單。
+    /// 依各市場的股票清單（與 <see cref="GetStockListAsync(MarketType, StockListOptions, CancellationToken)"/> 共用快取）判斷每一檔的市場。
+    /// 先查不含權證的清單，還找不到的代號再查含權證的清單：內建來源的上市權證清單比其他清單大得多，查股票時用不到。
+    /// 每一輪依註冊順序逐一取得清單，全部找到就停，因此只查上市股票時不必下載上櫃清單。
     /// 不在任何清單中的代號為 <c>NOT_FOUND</c>；但有清單取得失敗時，找不到的代號回傳該失敗——它可能就在那份清單裡。
+    /// 第一輪失敗的市場第二輪不再重試，交給呼叫端下次再查。
     /// </summary>
     private async Task<Dictionary<string, StockResult<MarketType>>> ResolveMarketsAsync(
         IReadOnlyList<string> symbols, CancellationToken ct)
     {
         var markets = new Dictionary<string, StockResult<MarketType>>(symbols.Count);
         StockResult<MarketType>? listFailure = null;
-        foreach (var market in _sources.Keys)
+        var failedMarkets = new HashSet<MarketType>();
+        foreach (var options in MarketDetectionPasses)
         {
-            var pending = symbols.Where(s => !markets.ContainsKey(s)).ToList();
-            if (pending.Count == 0)
-                break;
-
-            var list = await GetStockListAsync(market, includeWarrant: true, ct);
-            if (!list.IsSuccess)
+            foreach (var market in _sources.Keys)
             {
-                listFailure ??= StockResult<MarketType>.Fail(list.ErrorCode, list.ErrorMessage, list.Exception);
-                continue;
-            }
+                var pending = symbols.Where(s => !markets.ContainsKey(s)).ToList();
+                if (pending.Count == 0)
+                    break;
+                if (failedMarkets.Contains(market))
+                    continue;
 
-            foreach (var symbol in pending.Where(list.Value.ContainsKey))
-                markets[symbol] = StockResult<MarketType>.Ok(market);
+                var list = await GetStockListAsync(market, options, ct);
+                if (!list.IsSuccess)
+                {
+                    failedMarkets.Add(market);
+                    listFailure ??= StockResult<MarketType>.Fail(list.ErrorCode, list.ErrorMessage, list.Exception);
+                    continue;
+                }
+
+                foreach (var symbol in pending.Where(list.Value.ContainsKey))
+                    markets[symbol] = StockResult<MarketType>.Ok(market);
+            }
         }
 
         foreach (var symbol in symbols.Where(s => !markets.ContainsKey(s)))

@@ -26,19 +26,26 @@ public class StockListOptionsTests
         Assert.Equal(StockListSource.OpenApi, default(StockListSource));
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task TheBoolOverloads_UseTheDefaultSource(bool includeWarrant)
+    [Fact]
+    public void WithWarrants_IsOpenApiIncludingWarrants()
+    {
+        Assert.Equal(StockListSource.OpenApi, StockListOptions.WithWarrants.Source);
+        Assert.True(StockListOptions.WithWarrants.IncludeWarrant);
+    }
+
+    [Fact]
+    public async Task WithoutOptions_TheDefaultIsUsed()
     {
         var tse = Source(MarketType.TSE, "2330");
         var service = BuildService(tse);
+        using var cts = new CancellationTokenSource();
 
-        await service.GetStockListAsync(MarketType.TSE, includeWarrant);
-        await service.GetAllStockListAsync(includeWarrant);
+        await service.GetStockListAsync(MarketType.TSE);
+        await service.GetAllStockListAsync();
+        await service.GetStockListAsync(MarketType.TSE, cts.Token);   // 只傳 token 的擴充多載
+        await service.GetAllStockListAsync(cts.Token);
 
-        await tse.Received(2).FetchStockListAsync(
-            new StockListOptions { IncludeWarrant = includeWarrant, Source = StockListSource.OpenApi }, Arg.Any<CancellationToken>());
+        await tse.Received(4).FetchStockListAsync(StockListOptions.Default, Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -74,46 +81,8 @@ public class StockListOptionsTests
         var service = BuildService(tse);
         var undefined = new StockListOptions { Source = (StockListSource)42 };
 
-        Assert.Throws<ArgumentNullException>(() => { _ = service.GetStockListAsync(MarketType.TSE, (StockListOptions)null!); });
-        Assert.Throws<ArgumentNullException>(() => { _ = service.GetAllStockListAsync((StockListOptions)null!); });
         Assert.Throws<ArgumentOutOfRangeException>(() => { _ = service.GetStockListAsync(MarketType.TSE, undefined); });
         Assert.Throws<ArgumentOutOfRangeException>(() => { _ = service.GetAllStockListAsync(undefined); });
         tse.DidNotReceiveWithAnyArgs().FetchStockListAsync(default(StockListOptions)!, default);
-    }
-
-    /// <summary>只實作 bool 多載的第三方來源（3.0 的寫法）。</summary>
-    private sealed class LegacySource : IStockDataSource
-    {
-        public List<bool> Requests { get; } = [];
-        public MarketType Market => MarketType.TSE;
-
-        public Task<StockQuote?> FetchRealtimeQuoteAsync(string symbol, QuoteOptions options, CancellationToken ct = default)
-            => Task.FromResult<StockQuote?>(null);
-
-        public Task<IReadOnlyList<StockHistory>> FetchHistoricalDataAsync(
-            string symbol, DateOnly from, DateOnly to, CancellationToken ct = default)
-            => Task.FromResult<IReadOnlyList<StockHistory>>([]);
-
-        public Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(bool includeWarrant = false, CancellationToken ct = default)
-        {
-            Requests.Add(includeWarrant);
-            return Task.FromResult<IReadOnlyDictionary<string, StockData>>(new Dictionary<string, StockData>
-            {
-                ["2330"] = new() { Symbol = "2330", Name = "台積電", Market = MarketType.TSE },
-            });
-        }
-    }
-
-    [Fact]
-    public async Task ASourceWithoutTheOptionsOverload_GetsIncludeWarrant_AndIgnoresTheUpstreamChoice()
-    {
-        var legacy = new LegacySource();
-        var service = BuildService(legacy);
-
-        var result = await service.GetStockListAsync(MarketType.TSE, new StockListOptions { IncludeWarrant = true, Source = StockListSource.Isin });
-        await service.GetStockListAsync(MarketType.TSE);
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal([true, false], legacy.Requests);
     }
 }

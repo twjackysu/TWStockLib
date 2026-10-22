@@ -22,4 +22,14 @@ public static class StockMarketServiceExtensions
     public static Task<IReadOnlyDictionary<string, StockResult<StockQuote>>> GetRealtimeQuotesAsync(
         this IStockMarketService service, IEnumerable<(string Symbol, MarketType Market)> symbols, CancellationToken ct)
         => service.GetRealtimeQuotesAsync(symbols, QuoteOptions.Default, ct);
+
+    /// <summary>以預設選項（不含權證）取得指定市場的股票清單，只傳 <see cref="CancellationToken"/>。</summary>
+    public static Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetStockListAsync(
+        this IStockMarketService service, MarketType market, CancellationToken ct)
+        => service.GetStockListAsync(market, StockListOptions.Default, ct);
+
+    /// <summary>以預設選項（不含權證）取得上市 + 上櫃的股票清單，只傳 <see cref="CancellationToken"/>。</summary>
+    public static Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetAllStockListAsync(
+        this IStockMarketService service, CancellationToken ct)
+        => service.GetAllStockListAsync(StockListOptions.Default, ct);
 }

@@ -6,6 +6,9 @@ public sealed record StockListOptions
     /// <summary>預設：不含權證，從 <see cref="StockListSource.OpenApi"/> 取得。</summary>
     public static StockListOptions Default { get; } = new();
 
+    /// <summary>包含權證（認購、認售與牛熊證），從 <see cref="StockListSource.OpenApi"/> 取得。</summary>
+    public static StockListOptions WithWarrants { get; } = new() { IncludeWarrant = true };
+
     /// <summary>為 <c>true</c> 時包含權證（認購、認售與牛熊證）。</summary>
     public bool IncludeWarrant { get; init; }
 

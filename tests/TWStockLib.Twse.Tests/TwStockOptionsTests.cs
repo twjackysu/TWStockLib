@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -37,14 +38,22 @@ public class TwStockOptionsTests
     {
         public Dictionary<string, TimeSpan> Expiries { get; } = [];
 
-        public Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry)
+        public Task<T> GetOrSetAsync<T>(
+            string key, Func<CancellationToken, Task<T>> factory, TimeSpan expiry, CancellationToken ct = default)
         {
             Expiries[key] = expiry;
-            return factory();
+            return factory(ct);
         }
 
-        public Task<T> RefreshAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry)
-            => GetOrSetAsync(key, factory, expiry);
+        public Task<T> RefreshAsync<T>(
+            string key, Func<CancellationToken, Task<T>> factory, TimeSpan expiry, CancellationToken ct = default)
+            => GetOrSetAsync(key, factory, expiry, ct);
+
+        public bool TryGetValue<T>(string key, [MaybeNullWhen(false)] out T value)
+        {
+            value = default;
+            return false;
+        }
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider

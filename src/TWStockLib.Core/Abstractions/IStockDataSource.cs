@@ -21,7 +21,7 @@ public interface IStockDataSource
     /// 內部有快取的來源應遵守 <see cref="QuoteOptions.BypassCache"/>，並以每一檔為單位快取。
     /// </summary>
     /// <remarks>
-    /// 預設實作逐檔呼叫 <see cref="FetchRealtimeQuoteAsync"/>，既有的實作不必修改；
+    /// 預設實作逐檔呼叫 <see cref="FetchRealtimeQuoteAsync"/>，自訂來源可以不實作；
     /// 上游支援一次查多檔的來源應覆寫，以減少請求數。
     /// </remarks>
     async Task<IReadOnlyDictionary<string, StockQuote>> FetchRealtimeQuotesAsync(
@@ -40,18 +40,10 @@ public interface IStockDataSource
     Task<IReadOnlyList<StockHistory>> FetchHistoricalDataAsync(
         string symbol, DateOnly from, DateOnly to, CancellationToken ct = default);
 
-    /// <summary>取得此市場的股票清單；<paramref name="includeWarrant"/> 為 <c>true</c> 時含權證（含牛熊證）。</summary>
-    Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(
-        bool includeWarrant = false, CancellationToken ct = default);
-
     /// <summary>
-    /// 以 <paramref name="options"/> 取得此市場的股票清單。<c>StockMarketService</c> 一律呼叫這個多載。
+    /// 取得此市場的股票清單；<see cref="StockListOptions.IncludeWarrant"/> 為 <c>true</c> 時含權證（含牛熊證）。
+    /// 只有單一上游的來源可以不理會 <see cref="StockListOptions.Source"/>。
     /// </summary>
-    /// <remarks>
-    /// 預設實作不理會 <see cref="StockListOptions.Source"/>，呼叫 <see cref="FetchStockListAsync(bool, CancellationToken)"/>，
-    /// 既有的實作不必修改；有多個上游可選的來源應覆寫。
-    /// </remarks>
     Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(
-        StockListOptions options, CancellationToken ct = default)
-        => FetchStockListAsync(options.IncludeWarrant, ct);
+        StockListOptions options, CancellationToken ct = default);
 }

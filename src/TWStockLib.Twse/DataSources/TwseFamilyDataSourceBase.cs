@@ -64,7 +64,7 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
             => (await FetchQuotesFromMisAsync([symbol], token)).FirstOrDefault(q => q.Symbol == symbol);
 
         return options.BypassCache
-            ? Cache.RefreshAsync(QuoteCacheKey(symbol), () => Fetch(ct), _options.QuoteCacheDuration)
+            ? Cache.RefreshAsync(QuoteCacheKey(symbol), Fetch, _options.QuoteCacheDuration, ct)
             : Cache.GetOrSetAsync(QuoteCacheKey(symbol), Fetch, _options.QuoteCacheDuration, ct);
     }
 
@@ -80,12 +80,8 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
         var toFetch = new List<string>(symbols.Count);
         foreach (var symbol in symbols)
         {
-            // 工廠回 null 不會被快取（ICacheService 的約定），這裡只是查快取、不會寫入任何東西；
-            // 用不帶 CancellationToken 的多載，不會加入或發起 single-flight 的載入
-            var cached = options.BypassCache
-                ? null
-                : await Cache.GetOrSetAsync(QuoteCacheKey(symbol), () => Task.FromResult<StockQuote?>(null), _options.QuoteCacheDuration);
-            if (cached is not null)
+            // 只查快取，不加入或發起 single-flight 的載入：未命中的代號要留給下面合併成一次 MIS 請求
+            if (!options.BypassCache && Cache.TryGetValue<StockQuote>(QuoteCacheKey(symbol), out var cached))
                 quotes[symbol] = cached;
             else
                 toFetch.Add(symbol);
@@ -100,7 +96,7 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
                     continue;
 
                 await Cache.RefreshAsync(
-                    QuoteCacheKey(quote.Symbol), () => Task.FromResult<StockQuote?>(quote), _options.QuoteCacheDuration);
+                    QuoteCacheKey(quote.Symbol), _ => Task.FromResult<StockQuote?>(quote), _options.QuoteCacheDuration, ct);
                 quotes[quote.Symbol] = quote;
             }
         }
@@ -141,10 +137,6 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
 
         return result.AsReadOnly();
     }
-
-    public Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(
-        bool includeWarrant = false, CancellationToken ct = default)
-        => FetchStockListAsync(new StockListOptions { IncludeWarrant = includeWarrant }, ct);
 
     /// <summary>
     /// 每個上游的清單各自快取（鍵 <c>stock_list_{上游}_{Market}</c>），同時發生的未命中只下載一次。

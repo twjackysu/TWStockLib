@@ -21,8 +21,8 @@ public class MemoryCacheServiceTests
         var cache = Build();
         var counter = new Counter();
 
-        var first = await cache.GetOrSetAsync("k", () => counter.Next("a"), Expiry);
-        var second = await cache.GetOrSetAsync("k", () => counter.Next("b"), Expiry);
+        var first = await cache.GetOrSetAsync("k", _ => counter.Next("a"), Expiry);
+        var second = await cache.GetOrSetAsync("k", _ => counter.Next("b"), Expiry);
 
         Assert.Equal("a", first);
         Assert.Equal("a", second);
@@ -35,8 +35,8 @@ public class MemoryCacheServiceTests
         var cache = Build();
         var counter = new Counter();
 
-        await cache.GetOrSetAsync("k", () => counter.Next(null), Expiry);
-        var second = await cache.GetOrSetAsync("k", () => counter.Next("a"), Expiry);
+        await cache.GetOrSetAsync("k", _ => counter.Next(null), Expiry);
+        var second = await cache.GetOrSetAsync("k", _ => counter.Next("a"), Expiry);
 
         Assert.Equal("a", second);
         Assert.Equal(2, counter.Calls);
@@ -47,9 +47,9 @@ public class MemoryCacheServiceTests
     {
         var cache = Build();
         var counter = new Counter();
-        await cache.GetOrSetAsync("k", () => counter.Next("a"), Expiry);
+        await cache.GetOrSetAsync("k", _ => counter.Next("a"), Expiry);
 
-        var refreshed = await cache.RefreshAsync("k", () => counter.Next("b"), Expiry);
+        var refreshed = await cache.RefreshAsync("k", _ => counter.Next("b"), Expiry);
 
         Assert.Equal("b", refreshed);
         Assert.Equal(2, counter.Calls);
@@ -60,10 +60,10 @@ public class MemoryCacheServiceTests
     {
         var cache = Build();
         var counter = new Counter();
-        await cache.GetOrSetAsync("k", () => counter.Next("a"), Expiry);
-        await cache.RefreshAsync("k", () => counter.Next("b"), Expiry);
+        await cache.GetOrSetAsync("k", _ => counter.Next("a"), Expiry);
+        await cache.RefreshAsync("k", _ => counter.Next("b"), Expiry);
 
-        var later = await cache.GetOrSetAsync("k", () => counter.Next("c"), Expiry);
+        var later = await cache.GetOrSetAsync("k", _ => counter.Next("c"), Expiry);
 
         Assert.Equal("b", later);
         Assert.Equal(2, counter.Calls);
@@ -74,10 +74,10 @@ public class MemoryCacheServiceTests
     {
         var cache = Build();
         var counter = new Counter();
-        await cache.GetOrSetAsync("k", () => counter.Next("a"), Expiry);
+        await cache.GetOrSetAsync("k", _ => counter.Next("a"), Expiry);
 
-        var refreshed = await cache.RefreshAsync("k", () => counter.Next(null), Expiry);
-        var later = await cache.GetOrSetAsync("k", () => counter.Next("c"), Expiry);
+        var refreshed = await cache.RefreshAsync("k", _ => counter.Next(null), Expiry);
+        var later = await cache.GetOrSetAsync("k", _ => counter.Next("c"), Expiry);
 
         Assert.Null(refreshed);
         Assert.Equal("a", later);
@@ -90,8 +90,8 @@ public class MemoryCacheServiceTests
         var cache = Build();
         var counter = new Counter();
 
-        var first = await cache.RefreshAsync("k", () => counter.Next("a"), Expiry);
-        var second = await cache.GetOrSetAsync("k", () => counter.Next("b"), Expiry);
+        var first = await cache.RefreshAsync("k", _ => counter.Next("a"), Expiry);
+        var second = await cache.GetOrSetAsync("k", _ => counter.Next("b"), Expiry);
 
         Assert.Equal("a", first);
         Assert.Equal("a", second);
@@ -263,41 +263,43 @@ public class MemoryCacheServiceTests
 
         var shared = cache.GetOrSetAsync("k", t => factory.Run(t), Expiry, CancellationToken.None);
         await factory.Started;
-        var refreshed = await cache.RefreshAsync("k", () => counter.Next(null), Expiry);
+        var refreshed = await cache.RefreshAsync("k", _ => counter.Next(null), Expiry);
         factory.Release();
 
         Assert.Null(refreshed);
         Assert.Equal(1, counter.Calls);
         Assert.Equal("v", await shared);
-        Assert.Equal("v", await cache.GetOrSetAsync("k", () => counter.Next("x"), Expiry));
+        Assert.Equal("v", await cache.GetOrSetAsync("k", _ => counter.Next("x"), Expiry));
     }
 
-    // ── 預設介面實作：自訂快取不必實作帶 token 的多載 ─────────────────────────
+    // ── TryGetValue：只查快取 ──────────────────────────────────────────────────
 
-    private sealed class LegacyCache : ICacheService
+    [Fact]
+    public async Task TryGetValue_FindsOnlyCachedNonNullValues()
     {
-        public List<string> Keys { get; } = [];
+        var cache = Build();
+        await cache.GetOrSetAsync("k", _ => Task.FromResult<string?>("a"), Expiry);
 
-        public Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry)
-        {
-            Keys.Add(key);
-            return factory();
-        }
-
-        public Task<T> RefreshAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry) => factory();
+        Assert.True(cache.TryGetValue<string>("k", out var value));
+        Assert.Equal("a", value);
+        Assert.False(cache.TryGetValue<string>("missing", out _));
     }
 
     [Fact]
-    public async Task TokenOverload_DefaultImplementation_CallsTheOriginalOverloadWithTheCallersToken()
+    public async Task TryGetValue_DoesNotJoinALoadInProgress()
     {
-        ICacheService legacy = new LegacyCache();
-        using var cts = new CancellationTokenSource();
-        CancellationToken received = default;
+        // 批次報價先以 TryGetValue 挑出未快取的代號；它不能等候或發起載入，否則會拖住整批查詢
+        var cache = Build();
+        var factory = new GatedFactory();
 
-        var value = await legacy.GetOrSetAsync("k", t => { received = t; return Task.FromResult("a"); }, Expiry, cts.Token);
+        var loading = cache.GetOrSetAsync("k", t => factory.Run(t), Expiry);
+        await factory.Started;
 
-        Assert.Equal("a", value);
-        Assert.Equal(["k"], ((LegacyCache)legacy).Keys);
-        Assert.Equal(cts.Token, received);
+        Assert.False(cache.TryGetValue<string>("k", out _));
+
+        factory.Release();
+        Assert.Equal("v", await loading);
+        Assert.True(cache.TryGetValue<string>("k", out var value));
+        Assert.Equal("v", value);
     }
 }

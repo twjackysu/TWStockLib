@@ -206,7 +206,7 @@ foreach (var symbol in watchlist)
 
 #### 不指定市場
 
-不確定代號是上市還是上櫃時，可省略 `MarketType`，函式庫會依股票清單（`GetStockListAsync`，不含權證）判斷：
+不確定代號是上市還是上櫃時，可省略 `MarketType`，函式庫會依股票清單（`GetStockListAsync`，含權證）判斷：
 
 ```csharp
 var quote = await stock.GetRealtimeQuoteAsync("6510");                    // 上櫃
@@ -219,7 +219,7 @@ await foreach (var q in stock.WatchAsync(["2330", "6510"], ct: stoppingToken)) {
   實測（2026-10）上市 12～78 秒、上櫃 16～24 秒；之後快取 `StockListCacheDuration`（預設 1 天）。
   依上市、上櫃的順序找到就停，只查上市股票時不會下載上櫃清單。
   不想讓第一個使用者等，可在啟動時先呼叫一次 `GetAllStockListAsync()` 預熱；若自行加了重試，逾時請參考[HttpClient 與重試](#httpclient-與重試)放寬。
-- 不在清單中的代號回傳 `NOT_FOUND`，包括打錯的代號、指數（`t00`）與權證；這些請改用指定市場的多載。
+- 不在清單中的代號回傳 `NOT_FOUND`，包括打錯的代號與指數（`t00`）；指數請改用指定市場的多載。
 - 股票清單取得失敗時回傳該失敗（例如 `UPSTREAM_ERROR`），不會誤報成 `NOT_FOUND`；追蹤時則在下一輪重試。
 
 #### 追蹤成交價

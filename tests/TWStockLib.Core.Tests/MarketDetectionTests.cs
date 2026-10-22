@@ -57,7 +57,7 @@ public class MarketDetectionTests
 
         Assert.Equal(MarketType.TSE, result.GetValueOrThrow().Market);
         await tse.Received(1).FetchRealtimeQuoteAsync("2330", QuoteOptions.NoCache, Arg.Any<CancellationToken>());
-        await tse.Received(1).FetchStockListAsync(false, Arg.Any<CancellationToken>());
+        await tse.Received(1).FetchStockListAsync(true, Arg.Any<CancellationToken>());
         await otc.DidNotReceiveWithAnyArgs().FetchStockListAsync(default, default);
     }
 

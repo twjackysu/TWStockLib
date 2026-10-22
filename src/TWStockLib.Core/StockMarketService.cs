@@ -280,7 +280,7 @@ public sealed class StockMarketService : IStockMarketService
     }
 
     /// <summary>
-    /// 依各市場的股票清單（不含權證，與 <see cref="GetStockListAsync"/> 的預設共用快取）判斷每一檔的市場。
+    /// 依各市場的完整股票清單（含權證；內建來源與 <see cref="GetStockListAsync"/> 共用同一份快取）判斷每一檔的市場。
     /// 依註冊順序逐一取得清單，全部找到就停，因此只查上市股票時不必下載上櫃清單。
     /// 不在任何清單中的代號為 <c>NOT_FOUND</c>；但有清單取得失敗時，找不到的代號回傳該失敗——它可能就在那份清單裡。
     /// </summary>
@@ -295,7 +295,7 @@ public sealed class StockMarketService : IStockMarketService
             if (pending.Count == 0)
                 break;
 
-            var list = await GetStockListAsync(market, includeWarrant: false, ct);
+            var list = await GetStockListAsync(market, includeWarrant: true, ct);
             if (!list.IsSuccess)
             {
                 listFailure ??= StockResult<MarketType>.Fail(list.ErrorCode, list.ErrorMessage, list.Exception);
@@ -309,7 +309,7 @@ public sealed class StockMarketService : IStockMarketService
         foreach (var symbol in symbols.Where(s => !markets.ContainsKey(s)))
         {
             markets[symbol] = listFailure ?? StockResult<MarketType>.Fail(StockErrorCodes.NotFound,
-                $"查無資料：{symbol} 不在股票清單中（指數、權證請指定市場）");
+                $"查無資料：{symbol} 不在股票清單中（指數請指定市場）");
         }
         return markets;
     }

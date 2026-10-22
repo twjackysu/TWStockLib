@@ -415,11 +415,11 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 
 **自動判斷市場**：不指定 `MarketType` 的多載依股票清單判斷代號屬於哪個市場。
 
-- 清單用 `GetStockListAsync(market, includeWarrant: false)`，與呼叫端預設的清單查詢共用快取（預設 1 天），不另外維護對照表。
+- 清單用 `GetStockListAsync(market, includeWarrant: true)`：內建來源只快取一份完整清單（見 §8），與呼叫端的清單查詢共用同一次下載（預設快取 1 天），不另外維護對照表。
 - 依註冊順序逐一取得清單，全部找到就停：只查上市股票時不會下載上櫃清單。第一次呼叫的成本是下載清單（上市約 9.7 MB，實測 12～78 秒，其中 AngleSharp 解析約 1.5 秒，其餘是傳輸；上櫃約 3.2 MB），
   文件建議啟動時以 `GetAllStockListAsync()` 預熱。
-- 不含權證：含權證的清單多出大量權證，而且與不含權證的清單快取鍵不同，會再下載一次同一頁。權證、指數（`t00`）不在清單中，
-  回傳 `NOT_FOUND`，請改用指定市場的多載。
+- 含權證：權證也能自動判斷，且內建來源含不含權證是同一份快取，不會多下載；查字典是 O(1)，上市清單 4 萬筆（九成以上是權證）也無妨。
+  指數（`t00`）不在 ISIN 清單中，回傳 `NOT_FOUND`，請改用指定市場的多載。
 - 有清單取得失敗、其他清單又找不到時，回傳該失敗而非 `NOT_FOUND`：代號可能就在沒取得的那份清單裡。
 - 不公開「查代號屬於哪個市場」的方法：`GetStockListAsync` / `GetAllStockListAsync` 已能做到，多一個公開成員就多一個 SemVer 承諾。
 
@@ -513,4 +513,4 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 - ❌ 不內建重試 / 斷路器 —— 只提供具名 HttpClient 讓使用者自己加，避免強迫相依 Polly，也避免替使用者決定重試策略。
 - ❌ 不提供逐主機的限流設定 —— 四個上游主機共用同一組 `PermitLimit` / `Window`，各自計算；目前沒有個別調整的需求。
 - ❌ 不把上市與上櫃的報價合併成同一個 MIS 請求 —— 會讓一個資料來源替別的市場查詢；混合清單每輪多一個請求而已。
-- ❌ 自動判斷市場不涵蓋權證與指數 —— 含權證的清單要另外下載、解析一次，筆數也多上許多；這些代號請指定市場。
+- ❌ 自動判斷市場不涵蓋指數 —— `t00` 等不在 ISIN 清單中，另建對照表得自己維護；指數請指定市場。

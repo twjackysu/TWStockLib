@@ -1,3 +1,4 @@
+using System.Globalization;
 using TWStockLib.Cache;
 using TWStockLib.Models;
 using TWStockLib.Twse.Http;
@@ -14,10 +15,12 @@ internal sealed class TpexStockDataSource(IStockHttpFetcher fetcher, ICacheServi
     protected override int IsinStrMode => 4;
 
     protected override Task<IReadOnlyList<StockHistory>> FetchMonthAsync(
-        string symbol, DateTime month, CancellationToken ct)
+        string symbol, DateOnly month, CancellationToken ct)
         => CachedMonth(symbol, month, async () =>
         {
-            var url = $"https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock/st43_result.php?l=zh-tw&date={month:yyyy/MM/dd}&code={symbol}";
+            // 「/」在自訂格式中是文化相依的日期分隔符號，必須用 InvariantCulture 才保證是斜線
+            var url = string.Create(CultureInfo.InvariantCulture,
+                $"https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock/st43_result.php?l=zh-tw&date={month:yyyy/MM/dd}&code={symbol}");
             var json = await Fetcher.GetStringAsync(url, ct);
             return TwseStockParser.ParseTpexHistory(json);
         });

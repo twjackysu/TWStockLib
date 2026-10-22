@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using Microsoft.Extensions.Logging;
 using TWStockLib.Abstractions;
 using TWStockLib.Models;
@@ -9,7 +10,6 @@ namespace TWStockLib.Services;
 /// 對外門面（Facade）：依 <see cref="MarketType"/> 路由到對應的 <see cref="IStockDataSource"/>，
 /// 統一例外處理為 <see cref="StockResult{T}"/>，並在報價更新時通知價格觀察者。
 /// 呼叫端取消（<see cref="CancellationToken"/>）時照 .NET 慣例拋出 <see cref="OperationCanceledException"/>。
-/// 回傳的模型都是呼叫端專屬的複本，修改它們不會影響函式庫內部的快取。
 /// </summary>
 public class StockMarketService : IStockMarketService
 {
@@ -62,7 +62,7 @@ public class StockMarketService : IStockMarketService
         if (quote.LastPrice.HasValue)
             NotifyPriceObservers(symbol, quote.LastPrice.Value);
 
-        return StockResult<StockQuote>.Ok(quote.Copy());
+        return StockResult<StockQuote>.Ok(quote);
     }
 
     /// <summary>觀察者的例外屬於呼叫端自己的程式，只記錄、不影響已成功取得的報價。</summary>
@@ -79,15 +79,15 @@ public class StockMarketService : IStockMarketService
     }
 
     public async Task<StockResult<IReadOnlyList<StockHistory>>> GetHistoricalDataAsync(
-        string symbol, DateTime startDate, DateTime endDate, MarketType market, CancellationToken ct = default)
+        string symbol, MarketType market, DateOnly from, DateOnly to, CancellationToken ct = default)
     {
         if (!_sources.TryGetValue(market, out var source))
             return StockResult<IReadOnlyList<StockHistory>>.Fail(StockErrorCodes.SourceNotFound, $"不支援的市場：{market}");
 
         try
         {
-            var history = await source.FetchHistoricalDataAsync(symbol, startDate, endDate, ct);
-            return StockResult<IReadOnlyList<StockHistory>>.Ok(history.Select(h => h.Copy()).ToList());
+            var history = await source.FetchHistoricalDataAsync(symbol, from, to, ct);
+            return StockResult<IReadOnlyList<StockHistory>>.Ok(history);
         }
         catch (Exception ex) when (!IsCallerCancellation(ex, ct))
         {
@@ -105,8 +105,7 @@ public class StockMarketService : IStockMarketService
         try
         {
             var list = await source.FetchStockListAsync(includeWarrant, ct);
-            return StockResult<IReadOnlyDictionary<string, StockData>>.Ok(
-                list.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.Copy()));
+            return StockResult<IReadOnlyDictionary<string, StockData>>.Ok(list);
         }
         catch (Exception ex) when (!IsCallerCancellation(ex, ct))
         {
@@ -125,9 +124,9 @@ public class StockMarketService : IStockMarketService
             {
                 var list = await source.FetchStockListAsync(includeWarrant, ct);
                 foreach (var kvp in list)
-                    merged[kvp.Key] = kvp.Value.Copy();
+                    merged[kvp.Key] = kvp.Value;
             }
-            return StockResult<IReadOnlyDictionary<string, StockData>>.Ok(merged);
+            return StockResult<IReadOnlyDictionary<string, StockData>>.Ok(merged.ToFrozenDictionary());
         }
         catch (Exception ex) when (!IsCallerCancellation(ex, ct))
         {

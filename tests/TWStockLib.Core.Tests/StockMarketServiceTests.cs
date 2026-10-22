@@ -217,7 +217,7 @@ public class StockMarketServiceTests
         ["quote"] = async (s, ct) => (await s.GetRealtimeQuoteAsync("2330", MarketType.TSE, ct)).ErrorCode,
         ["quote-bypass"] = async (s, ct) => (await s.GetRealtimeQuoteAsync("2330", MarketType.TSE, bypassCache: true, ct)).ErrorCode,
         ["history"] = async (s, ct) => (await s.GetHistoricalDataAsync(
-            "2330", new DateTime(2025, 9, 1), new DateTime(2025, 9, 30), MarketType.TSE, ct)).ErrorCode,
+            "2330", MarketType.TSE, new DateOnly(2025, 9, 1), new DateOnly(2025, 9, 30), ct)).ErrorCode,
         ["list"] = async (s, ct) => (await s.GetStockListAsync(MarketType.TSE, ct: ct)).ErrorCode,
         ["all"] = async (s, ct) => (await s.GetAllStockListAsync(ct: ct)).ErrorCode,
     };
@@ -230,7 +230,7 @@ public class StockMarketServiceTests
               .Returns<StockQuote?>(ci => throw error(ci.Arg<CancellationToken>()));
         source.FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
               .Returns<StockQuote?>(ci => throw error(ci.Arg<CancellationToken>()));
-        source.FetchHistoricalDataAsync(Arg.Any<string>(), Arg.Any<DateTime>(), Arg.Any<DateTime>(), Arg.Any<CancellationToken>())
+        source.FetchHistoricalDataAsync(Arg.Any<string>(), Arg.Any<DateOnly>(), Arg.Any<DateOnly>(), Arg.Any<CancellationToken>())
               .Returns<IReadOnlyList<StockHistory>>(ci => throw error(ci.Arg<CancellationToken>()));
         source.FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
               .Returns<IReadOnlyDictionary<string, StockData>>(ci => throw error(ci.Arg<CancellationToken>()));
@@ -268,61 +268,16 @@ public class StockMarketServiceTests
         Assert.Equal(StockErrorCodes.Timeout, errorCode);
     }
 
-    // ── 回傳呼叫端專屬的複本 ──────────────────────────────────────────────────
+    // ── 未指定市場 ────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task GetRealtimeQuoteAsync_MutatingTheResult_DoesNotAffectLaterCalls()
+    public async Task GetRealtimeQuoteAsync_DefaultMarket_ReturnsSourceNotFound()
     {
-        var tse = FakeSource(MarketType.TSE);
-        var cached = new StockQuote
-        {
-            Symbol = "2330", Name = "台積電", Market = MarketType.TSE, LastPrice = 1000m, Top5SellPrice = [1001m],
-        };
-        tse.FetchRealtimeQuoteAsync("2330", Arg.Any<CancellationToken>()).Returns(cached);
-        var service = BuildService(tse);
+        var result = await BuildService(FakeSource(MarketType.TSE), FakeSource(MarketType.OTC))
+            .GetRealtimeQuoteAsync("2330", default);
 
-        var first = (await service.GetRealtimeQuoteAsync("2330", MarketType.TSE)).Value!;
-        first.LastPrice = 1m;
-        first.Top5SellPrice[0] = 1m;
-        var second = (await service.GetRealtimeQuoteAsync("2330", MarketType.TSE)).Value!;
-
-        Assert.Equal(1000m, second.LastPrice);
-        Assert.Equal(1001m, second.Top5SellPrice[0]);
-    }
-
-    [Fact]
-    public async Task GetHistoricalDataAsync_MutatingTheResult_DoesNotAffectLaterCalls()
-    {
-        var tse = FakeSource(MarketType.TSE);
-        IReadOnlyList<StockHistory> cached = [new StockHistory { Date = new DateTime(2025, 9, 1), ClosingPrice = 1165m }];
-        tse.FetchHistoricalDataAsync("2330", Arg.Any<DateTime>(), Arg.Any<DateTime>(), Arg.Any<CancellationToken>())
-           .Returns(cached);
-        var service = BuildService(tse);
-        var (from, to) = (new DateTime(2025, 9, 1), new DateTime(2025, 9, 30));
-
-        var first = (await service.GetHistoricalDataAsync("2330", from, to, MarketType.TSE)).Value!;
-        first[0].ClosingPrice = 1m;
-        var second = (await service.GetHistoricalDataAsync("2330", from, to, MarketType.TSE)).Value!;
-
-        Assert.Equal(1165m, Assert.Single(second).ClosingPrice);
-    }
-
-    [Fact]
-    public async Task GetStockListAsync_MutatingTheResult_DoesNotAffectLaterCalls()
-    {
-        var tse = FakeSource(MarketType.TSE);
-        tse.FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
-           .Returns(new Dictionary<string, StockData>
-           {
-               ["2330"] = new() { Symbol = "2330", Name = "台積電", Market = MarketType.TSE },
-           });
-        var service = BuildService(tse);
-
-        var first = (await service.GetStockListAsync(MarketType.TSE)).Value!;
-        first["2330"].Name = "改掉";
-        var second = (await service.GetStockListAsync(MarketType.TSE)).Value!;
-
-        Assert.Equal("台積電", second["2330"].Name);
+        Assert.Equal(MarketType.Unknown, default(MarketType));
+        Assert.Equal(StockErrorCodes.SourceNotFound, result.ErrorCode);
     }
 
     // ── 同一市場重複註冊 ──────────────────────────────────────────────────────

@@ -43,18 +43,18 @@ class Program
                 logger.Info("獲取歷史數據...");
                 var tseHistory = await stockMarketService.GetHistoricalDataAsync(
                     "006208",
-                    new DateTime(2019, 11, 1),
-                    new DateTime(2019, 11, 30),
-                    MarketType.TSE);
+                    MarketType.TSE,
+                    new DateOnly(2019, 11, 1),
+                    new DateOnly(2019, 11, 30));
                 logger.Info($"006208 歷史數據: {tseHistory.Value?.Count ?? 0} 筆");
 
                 // 獲取歷史數據 00687B
                 logger.Info("嘗試獲取 00687B 的歷史數據...");
                 var otcHistory = await stockMarketService.GetHistoricalDataAsync(
                     "00687B",
-                    new DateTime(2023, 11, 1),
-                    new DateTime(2023, 11, 30),
-                    MarketType.OTC);
+                    MarketType.OTC,
+                    new DateOnly(2023, 11, 1),
+                    new DateOnly(2023, 11, 30));
                 logger.Info($"00687B 歷史數據: {otcHistory.Value?.Count ?? 0} 筆");
                 
                 // 獲取即時報價

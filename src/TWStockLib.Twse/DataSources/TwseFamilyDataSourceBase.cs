@@ -1,3 +1,4 @@
+using System.Globalization;
 using TWStockLib.Abstractions;
 using TWStockLib.Cache;
 using TWStockLib.Models;
@@ -52,21 +53,21 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
     }
 
     public async Task<IReadOnlyList<StockHistory>> FetchHistoricalDataAsync(
-        string symbol, DateTime startDate, DateTime endDate, CancellationToken ct = default)
+        string symbol, DateOnly from, DateOnly to, CancellationToken ct = default)
     {
         var result = new List<StockHistory>();
-        var current = new DateTime(startDate.Year, startDate.Month, 1);
-        var lastMonth = new DateTime(endDate.Year, endDate.Month, 1);
+        var month = new DateOnly(from.Year, from.Month, 1);
+        var lastMonth = new DateOnly(to.Year, to.Month, 1);
 
-        while (current <= lastMonth)
+        while (month <= lastMonth)
         {
             ct.ThrowIfCancellationRequested();
-            var monthData = await FetchMonthAsync(symbol, current, ct);
-            result.AddRange(monthData);
-            current = current.AddMonths(1);
+            var monthData = await FetchMonthAsync(symbol, month, ct);
+            result.AddRange(monthData.Where(h => h.Date >= from && h.Date <= to));
+            month = month.AddMonths(1);
         }
 
-        return result.Where(h => h.Date >= startDate && h.Date <= endDate).ToList();
+        return result.AsReadOnly();
     }
 
     public Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(
@@ -83,13 +84,13 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
 
     /// <summary>取得單一月份的歷史資料（含快取），由子類別決定端點與解析方式。</summary>
     protected abstract Task<IReadOnlyList<StockHistory>> FetchMonthAsync(
-        string symbol, DateTime month, CancellationToken ct);
+        string symbol, DateOnly month, CancellationToken ct);
 
     /// <summary>共用的單月快取包裝，子類別在 fetch 委派內組 URL 與解析。</summary>
     protected Task<IReadOnlyList<StockHistory>> CachedMonth(
-        string symbol, DateTime month, Func<Task<IReadOnlyList<StockHistory>>> fetch)
+        string symbol, DateOnly month, Func<Task<IReadOnlyList<StockHistory>>> fetch)
     {
-        var cacheKey = $"history_{Market}_{symbol}_{month:yyyyMM}";
+        var cacheKey = string.Create(CultureInfo.InvariantCulture, $"history_{Market}_{symbol}_{month:yyyyMM}");
         return Cache.GetOrSetAsync(cacheKey, fetch, HistoryTtl(month));
     }
 
@@ -97,10 +98,10 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
     /// 已結束的月份資料不再變動，快取一天；當月（台灣時間）每個交易日收盤後會多一列，只短暫快取，
     /// 未來月份同理，避免月份開始後仍拿到先前快取的空資料。
     /// </summary>
-    private TimeSpan HistoryTtl(DateTime month)
+    private TimeSpan HistoryTtl(DateOnly month)
     {
         var taiwanNow = _timeProvider.GetUtcNow().ToOffset(TaiwanUtcOffset);
-        var currentMonth = new DateTime(taiwanNow.Year, taiwanNow.Month, 1);
-        return new DateTime(month.Year, month.Month, 1) < currentMonth ? DailyTtl : CurrentMonthHistoryTtl;
+        var currentMonth = new DateOnly(taiwanNow.Year, taiwanNow.Month, 1);
+        return new DateOnly(month.Year, month.Month, 1) < currentMonth ? DailyTtl : CurrentMonthHistoryTtl;
     }
 }

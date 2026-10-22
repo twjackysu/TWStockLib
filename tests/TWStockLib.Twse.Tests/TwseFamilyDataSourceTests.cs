@@ -96,7 +96,8 @@ public class TwseFamilyDataSourceTests
         Assert.Contains("ex_ch=tse_t00.tw", fetcher.Urls[0]);
         Assert.Equal(23100.12m, quote!.LastPrice);
         Assert.Equal(22950.00m, quote.YesterdayClosingPrice);
-        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(1791782705000).DateTime, quote.SyncTime);
+        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(1791782705000), quote.SyncTime);
+        Assert.Equal(TimeSpan.FromHours(8), quote.SyncTime!.Value.Offset);
     }
 
     [Fact]
@@ -139,7 +140,7 @@ public class TwseFamilyDataSourceTests
             new FakeFetcher("""{"stat":"OK","data":[]}"""), cache,
             new FixedTimeProvider(DateTimeOffset.Parse(now, CultureInfo.InvariantCulture)));
 
-        await source.FetchHistoricalDataAsync("2330", new DateTime(2025, 8, 1), new DateTime(2025, 10, 31));
+        await source.FetchHistoricalDataAsync("2330", new DateOnly(2025, 8, 1), new DateOnly(2025, 10, 31));
 
         Assert.Equal(TimeSpan.FromDays(1), cache.Expiries["history_TSE_2330_202508"]);
         Assert.True(cache.Expiries["history_TSE_2330_202509"] < TimeSpan.FromHours(1), "當月只能短暫快取");

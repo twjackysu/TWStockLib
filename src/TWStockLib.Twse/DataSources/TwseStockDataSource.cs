@@ -1,3 +1,4 @@
+using System.Globalization;
 using TWStockLib.Cache;
 using TWStockLib.Models;
 using TWStockLib.Twse.Http;
@@ -14,10 +15,11 @@ internal sealed class TwseStockDataSource(IStockHttpFetcher fetcher, ICacheServi
     protected override int IsinStrMode => 2;
 
     protected override Task<IReadOnlyList<StockHistory>> FetchMonthAsync(
-        string symbol, DateTime month, CancellationToken ct)
+        string symbol, DateOnly month, CancellationToken ct)
         => CachedMonth(symbol, month, async () =>
         {
-            var url = $"https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date={month:yyyyMM01}&stockNo={symbol}";
+            var url = string.Create(CultureInfo.InvariantCulture,
+                $"https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date={month:yyyyMMdd}&stockNo={symbol}");
             var json = await Fetcher.GetStringAsync(url, ct);
             return TwseStockParser.ParseTwseHistory(json);
         });

@@ -3,7 +3,7 @@ using System.Text;
 namespace TWStockLib.Twse.Http;
 
 /// <inheritdoc cref="IStockHttpFetcher" />
-public sealed class TwseHttpFetcher : IStockHttpFetcher
+internal sealed class TwseHttpFetcher : IStockHttpFetcher
 {
     private readonly IHttpClientFactory _httpClientFactory;
 

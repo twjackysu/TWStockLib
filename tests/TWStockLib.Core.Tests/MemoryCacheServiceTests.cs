@@ -1,10 +1,12 @@
 using Microsoft.Extensions.Caching.Memory;
-using TWStockLib.Cache;
+using TWStockLib.Abstractions;
 
 namespace TWStockLib.Core.Tests;
 
 public class MemoryCacheServiceTests
 {
+    private static readonly TimeSpan Expiry = TimeSpan.FromMinutes(1);
+
     private static MemoryCacheService Build() => new(new MemoryCache(new MemoryCacheOptions()));
 
     private sealed class Counter
@@ -19,8 +21,8 @@ public class MemoryCacheServiceTests
         var cache = Build();
         var counter = new Counter();
 
-        var first = await cache.GetOrSetAsync("k", () => counter.Next("a"), TimeSpan.FromMinutes(1));
-        var second = await cache.GetOrSetAsync("k", () => counter.Next("b"), TimeSpan.FromMinutes(1));
+        var first = await cache.GetOrSetAsync("k", () => counter.Next("a"), Expiry);
+        var second = await cache.GetOrSetAsync("k", () => counter.Next("b"), Expiry);
 
         Assert.Equal("a", first);
         Assert.Equal("a", second);
@@ -28,79 +30,71 @@ public class MemoryCacheServiceTests
     }
 
     [Fact]
-    public async Task GetOrSetAsync_BypassCache_RunsTheFactoryEvenWhenCached()
+    public async Task GetOrSetAsync_NullIsNotCached()
     {
         var cache = Build();
         var counter = new Counter();
-        await cache.GetOrSetAsync("k", () => counter.Next("a"), TimeSpan.FromMinutes(1));
 
-        var bypassed = await cache.GetOrSetAsync("k", () => counter.Next("b"), TimeSpan.FromMinutes(1), bypassCache: true);
+        await cache.GetOrSetAsync("k", () => counter.Next(null), Expiry);
+        var second = await cache.GetOrSetAsync("k", () => counter.Next("a"), Expiry);
 
-        Assert.Equal("b", bypassed);
+        Assert.Equal("a", second);
         Assert.Equal(2, counter.Calls);
     }
 
     [Fact]
-    public async Task GetOrSetAsync_BypassCache_UpdatesTheCacheForLaterNormalCalls()
+    public async Task RefreshAsync_RunsTheFactoryEvenWhenCached()
     {
         var cache = Build();
         var counter = new Counter();
-        await cache.GetOrSetAsync("k", () => counter.Next("a"), TimeSpan.FromMinutes(1));
-        await cache.GetOrSetAsync("k", () => counter.Next("b"), TimeSpan.FromMinutes(1), bypassCache: true);
+        await cache.GetOrSetAsync("k", () => counter.Next("a"), Expiry);
 
-        var later = await cache.GetOrSetAsync("k", () => counter.Next("c"), TimeSpan.FromMinutes(1));
+        var refreshed = await cache.RefreshAsync("k", () => counter.Next("b"), Expiry);
+
+        Assert.Equal("b", refreshed);
+        Assert.Equal(2, counter.Calls);
+    }
+
+    [Fact]
+    public async Task RefreshAsync_UpdatesTheCacheForLaterCalls()
+    {
+        var cache = Build();
+        var counter = new Counter();
+        await cache.GetOrSetAsync("k", () => counter.Next("a"), Expiry);
+        await cache.RefreshAsync("k", () => counter.Next("b"), Expiry);
+
+        var later = await cache.GetOrSetAsync("k", () => counter.Next("c"), Expiry);
 
         Assert.Equal("b", later);
         Assert.Equal(2, counter.Calls);
     }
 
     [Fact]
-    public async Task GetOrSetAsync_BypassCache_NullResult_DoesNotEvictTheCachedValue()
+    public async Task RefreshAsync_NullResult_DoesNotEvictTheCachedValue()
     {
         var cache = Build();
         var counter = new Counter();
-        await cache.GetOrSetAsync("k", () => counter.Next("a"), TimeSpan.FromMinutes(1));
+        await cache.GetOrSetAsync("k", () => counter.Next("a"), Expiry);
 
-        var bypassed = await cache.GetOrSetAsync("k", () => counter.Next(null), TimeSpan.FromMinutes(1), bypassCache: true);
-        var later = await cache.GetOrSetAsync("k", () => counter.Next("c"), TimeSpan.FromMinutes(1));
+        var refreshed = await cache.RefreshAsync("k", () => counter.Next(null), Expiry);
+        var later = await cache.GetOrSetAsync("k", () => counter.Next("c"), Expiry);
 
-        Assert.Null(bypassed);
+        Assert.Null(refreshed);
         Assert.Equal("a", later);
         Assert.Equal(2, counter.Calls);
     }
 
     [Fact]
-    public async Task GetOrSetAsync_BypassCache_OnAnEmptyCache_BehavesLikeANormalMiss()
+    public async Task RefreshAsync_OnAnEmptyCache_BehavesLikeANormalMiss()
     {
         var cache = Build();
         var counter = new Counter();
 
-        var first = await cache.GetOrSetAsync("k", () => counter.Next("a"), TimeSpan.FromMinutes(1), bypassCache: true);
-        var second = await cache.GetOrSetAsync("k", () => counter.Next("b"), TimeSpan.FromMinutes(1));
+        var first = await cache.RefreshAsync("k", () => counter.Next("a"), Expiry);
+        var second = await cache.GetOrSetAsync("k", () => counter.Next("b"), Expiry);
 
         Assert.Equal("a", first);
         Assert.Equal("a", second);
         Assert.Equal(1, counter.Calls);
-    }
-
-    [Fact]
-    public async Task ADefaultInterfaceImplementation_Bypasses_ButCannotWriteBack()
-    {
-        // 自訂的 ICacheService 只實作舊方法時，新的 overload 仍可用：略過快取＝直接執行 factory。
-        ICacheService legacy = new LegacyCache();
-        var counter = new Counter();
-
-        var bypassed = await legacy.GetOrSetAsync("k", () => counter.Next("fresh"), null, bypassCache: true);
-        var normal = await legacy.GetOrSetAsync("k", () => counter.Next("unused"), null, bypassCache: false);
-
-        Assert.Equal("fresh", bypassed);
-        Assert.Equal("from-legacy-cache", normal);
-        Assert.Equal(1, counter.Calls);
-    }
-
-    private sealed class LegacyCache : ICacheService
-    {
-        public Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan? expiry = null)
-            => Task.FromResult((T)(object)"from-legacy-cache");
     }
 }

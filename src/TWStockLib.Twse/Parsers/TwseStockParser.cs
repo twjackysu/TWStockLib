@@ -1,22 +1,27 @@
+using System.Collections.Frozen;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text.Json;
 using AngleSharp.Dom;
 using AngleSharp.Html.Parser;
-using TWStockLib.Models;
 
 namespace TWStockLib.Twse.Parsers;
 
-/// <inheritdoc cref="IStockParser" />
-public sealed class TwseStockParser : IStockParser
+/// <summary>
+/// 將證交所家族端點的原始回應字串轉成強型別模型。純函式、不碰 IO，可餵固定 fixture 單元測試。
+/// 回傳的集合都是唯讀的，可以直接放進快取共用。
+/// </summary>
+internal static class TwseStockParser
 {
     /// <summary>櫃買 st43 的成交量單位是「仟股」、成交金額是「仟元」；證交所 STOCK_DAY 是「股」、「元」。</summary>
-    private const uint TpexUnitScale = 1000;
+    private const int TpexUnitScale = 1000;
 
     /// <summary>ISIN 表格欄位依序為：代號及名稱、ISIN、上市日、市場別、產業別、CFICode、備註。</summary>
     private const int IsinCfiCodeColumn = 5;
 
-    public StockQuote? ParseRealtimeQuote(string json, MarketType market)
+    private static readonly TimeSpan TaiwanUtcOffset = TimeSpan.FromHours(8);
+
+    public static StockQuote? ParseRealtimeQuote(string json, MarketType market)
     {
         using var doc = JsonDocument.Parse(json);
         if (!doc.RootElement.TryGetProperty("msgArray", out var msgArray)
@@ -26,19 +31,21 @@ public sealed class TwseStockParser : IStockParser
             return null;
         }
 
+        // 查無此代號、或代號不屬於這個市場（例如以上櫃查 2330）時，上游仍回一筆代號為空的佔位資料
         var item = msgArray[0];
+        if (string.IsNullOrEmpty(GetString(item, "c")))
+            return null;
+
         return new StockQuote
         {
             Symbol = GetString(item, "c"),
             Market = market,
             Name = GetString(item, "n"),
             LastPrice = GetNullableDecimal(item, "z"),
-            LastVolume = GetNullableUInt32(item, "tv"),
-            TotalVolume = GetNullableUInt32(item, "v"),
-            Top5SellPrice = GetDecimalArray(item, "a"),
-            Top5SellVolume = GetUInt32Array(item, "f"),
-            Top5BuyPrice = GetDecimalArray(item, "b"),
-            Top5BuyVolume = GetUInt32Array(item, "g"),
+            LastVolume = GetNullableInt64(item, "tv"),
+            TotalVolume = GetNullableInt64(item, "v"),
+            Asks = GetPriceLevels(item, priceKey: "a", volumeKey: "f"),
+            Bids = GetPriceLevels(item, priceKey: "b", volumeKey: "g"),
             SyncTime = GetUnixTime(item, "tlong"),
             HighestPrice = GetNullableDecimal(item, "h"),
             LowestPrice = GetNullableDecimal(item, "l"),
@@ -49,7 +56,7 @@ public sealed class TwseStockParser : IStockParser
         };
     }
 
-    public IReadOnlyList<StockHistory> ParseTwseHistory(string json)
+    public static IReadOnlyList<StockHistory> ParseTwseHistory(string json)
     {
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
@@ -62,7 +69,7 @@ public sealed class TwseStockParser : IStockParser
         return MapRows(data, unitScale: 1);
     }
 
-    public IReadOnlyList<StockHistory> ParseTpexHistory(string json)
+    public static IReadOnlyList<StockHistory> ParseTpexHistory(string json)
     {
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
@@ -81,7 +88,7 @@ public sealed class TwseStockParser : IStockParser
         return MapRows(data, TpexUnitScale);
     }
 
-    public IReadOnlyDictionary<string, StockData> ParseStockList(string html, MarketType market, bool includeWarrant)
+    public static IReadOnlyDictionary<string, StockData> ParseStockList(string html, MarketType market, bool includeWarrant)
     {
         var parser = new HtmlParser();
         var doc = parser.ParseDocument(html);
@@ -103,7 +110,7 @@ public sealed class TwseStockParser : IStockParser
             result[symbol] = new StockData { Symbol = symbol, Name = parts[1], Market = market };
         }
 
-        return result;
+        return result.ToFrozenDictionary();
     }
 
     /// <summary>
@@ -120,7 +127,7 @@ public sealed class TwseStockParser : IStockParser
 
     #region History Rows
 
-    private static IReadOnlyList<StockHistory> MapRows(JsonElement dataArray, uint unitScale)
+    private static IReadOnlyList<StockHistory> MapRows(JsonElement dataArray, int unitScale)
     {
         var result = new List<StockHistory>(dataArray.GetArrayLength());
         foreach (var row in dataArray.EnumerateArray())
@@ -128,15 +135,15 @@ public sealed class TwseStockParser : IStockParser
             if (TryMapRow(row, unitScale, out var history))
                 result.Add(history);
         }
-        return result;
+        return result.AsReadOnly();
     }
 
     /// <summary>
     /// 欄位依序為：日期、成交量、成交金額、開、高、低、收、漲跌價差、成交筆數。
     /// 成交量與金額乘上 <paramref name="unitScale"/> 換算成「股」、「元」。
-    /// 任一欄格式不符就略過整列，不以預設值捏造資料；無成交的「--」視為 0。
+    /// 日期與數量欄格式不符就略過整列，不以預設值捏造資料；無成交的「--」價格為 <c>null</c>。
     /// </summary>
-    private static bool TryMapRow(JsonElement row, uint unitScale, [NotNullWhen(true)] out StockHistory? history)
+    private static bool TryMapRow(JsonElement row, int unitScale, [NotNullWhen(true)] out StockHistory? history)
     {
         history = null;
         if (row.ValueKind != JsonValueKind.Array || row.GetArrayLength() < 9)
@@ -144,13 +151,13 @@ public sealed class TwseStockParser : IStockParser
 
         var cells = row.EnumerateArray().Select(CellText).ToArray();
         if (!TryParseRocDate(cells[0], out var date)
-            || !TryParseScaledUInt32(cells[1], unitScale, out var volume)
+            || !TryParseScaledInt64(cells[1], unitScale, out var volume)
             || !TryParseHistoryDecimal(cells[2], out var turnover)
-            || !TryParseHistoryDecimal(cells[3], out var open)
-            || !TryParseHistoryDecimal(cells[4], out var high)
-            || !TryParseHistoryDecimal(cells[5], out var low)
-            || !TryParseHistoryDecimal(cells[6], out var close)
-            || !TryParseScaledUInt32(cells[8], 1, out var deals))
+            || !TryParseHistoryPrice(cells[3], out var open)
+            || !TryParseHistoryPrice(cells[4], out var high)
+            || !TryParseHistoryPrice(cells[5], out var low)
+            || !TryParseHistoryPrice(cells[6], out var close)
+            || !TryParseScaledInt64(cells[8], 1, out var deals))
         {
             return false;
         }
@@ -159,12 +166,15 @@ public sealed class TwseStockParser : IStockParser
         {
             Date = date,
             TradeVolume = volume,
-            TurnOverInValue = turnover * unitScale,
+            TurnoverValue = turnover * unitScale,
             OpeningPrice = open,
             HighestPrice = high,
             LowestPrice = low,
             ClosingPrice = close,
-            DailyPricing = cells[7],
+            // 除權息等不比價的日子是「X0.00」這類非數字，視為沒有漲跌價差
+            Change = decimal.TryParse(cells[7], NumberStyles.Number, CultureInfo.InvariantCulture, out var change)
+                ? change
+                : null,
             NumberOfDeals = deals,
         };
         return true;
@@ -174,7 +184,7 @@ public sealed class TwseStockParser : IStockParser
         => cell.ValueKind == JsonValueKind.String ? cell.GetString() ?? string.Empty : cell.ToString();
 
     /// <summary>解析「114/09/01」（民國年）或「2025-09-01」（西元年）。</summary>
-    private static bool TryParseRocDate(string text, out DateTime date)
+    private static bool TryParseRocDate(string text, out DateOnly date)
     {
         date = default;
         var parts = text.Replace("＊", "").Trim().Split('/', '-');
@@ -192,7 +202,20 @@ public sealed class TwseStockParser : IStockParser
         if (year > 9999 || month is < 1 or > 12 || day < 1 || day > DateTime.DaysInMonth(year, month))
             return false;
 
-        date = new DateTime(year, month, day);
+        date = new DateOnly(year, month, day);
+        return true;
+    }
+
+    /// <summary>無成交的「--」為 <c>null</c>；其他非數字視為格式不符。</summary>
+    private static bool TryParseHistoryPrice(string text, out decimal? value)
+    {
+        value = null;
+        if (IsBlank(text.Trim()))
+            return true;
+        if (!decimal.TryParse(text, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsed))
+            return false;
+
+        value = parsed;
         return true;
     }
 
@@ -203,18 +226,19 @@ public sealed class TwseStockParser : IStockParser
             || decimal.TryParse(text, NumberStyles.Number, CultureInfo.InvariantCulture, out value);
     }
 
-    private static bool TryParseScaledUInt32(string text, uint scale, out uint value)
+    private static bool TryParseScaledInt64(string text, int scale, out long value)
     {
         value = 0;
         if (IsBlank(text.Trim()))
             return true;
-        if (!ulong.TryParse(text, NumberStyles.Integer | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out var raw)
-            || raw > uint.MaxValue / scale)
+        if (!long.TryParse(text, NumberStyles.Integer | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out var raw)
+            || raw < 0
+            || raw > long.MaxValue / scale)
         {
             return false;
         }
 
-        value = (uint)(raw * scale);
+        value = raw * scale;
         return true;
     }
 
@@ -228,46 +252,51 @@ public sealed class TwseStockParser : IStockParser
     private static bool IsBlank(string? v) => string.IsNullOrEmpty(v) || v is "-" or "--";
 
     private static decimal? GetNullableDecimal(JsonElement obj, string key)
+        => ParseNullableDecimal(GetString(obj, key));
+
+    private static decimal? ParseNullableDecimal(string v)
     {
-        var v = GetString(obj, key);
         if (IsBlank(v)) return null;
         return decimal.TryParse(v, NumberStyles.Any, CultureInfo.InvariantCulture, out var d) ? d : null;
     }
 
-    private static uint? GetNullableUInt32(JsonElement obj, string key)
-    {
-        var v = GetString(obj, key);
-        if (IsBlank(v)) return null;
-        return uint.TryParse(v.Replace(",", ""), out var u) ? u : null;
-    }
+    private static long? GetNullableInt64(JsonElement obj, string key)
+        => ParseNullableInt64(GetString(obj, key));
 
-    private static DateTime? GetUnixTime(JsonElement obj, string key)
+    private static long? ParseNullableInt64(string v)
     {
-        var v = GetString(obj, key);
         if (IsBlank(v)) return null;
-        return long.TryParse(v, out var ms)
-            ? DateTimeOffset.FromUnixTimeMilliseconds(ms).DateTime
+        return long.TryParse(v, NumberStyles.Integer | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out var l)
+            ? l
             : null;
     }
 
-    private static decimal[] GetDecimalArray(JsonElement obj, string key)
+    private static DateTimeOffset? GetUnixTime(JsonElement obj, string key)
     {
         var v = GetString(obj, key);
-        if (string.IsNullOrEmpty(v)) return [];
-        return v.Split('_')
-            .Where(x => !IsBlank(x))
-            .Select(x => decimal.TryParse(x, NumberStyles.Any, CultureInfo.InvariantCulture, out var d) ? d : 0m)
-            .ToArray();
+        if (IsBlank(v)) return null;
+        return long.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out var ms)
+            ? DateTimeOffset.FromUnixTimeMilliseconds(ms).ToOffset(TaiwanUtcOffset)
+            : null;
     }
 
-    private static uint[] GetUInt32Array(JsonElement obj, string key)
+    /// <summary>
+    /// 五檔的價格與張數分別放在兩個以「_」分隔的欄位（結尾多一個「_」），依位置配對；
+    /// 任一邊缺值或無法解析的檔位略過，避免價格與張數錯位。
+    /// </summary>
+    private static IReadOnlyList<PriceLevel> GetPriceLevels(JsonElement obj, string priceKey, string volumeKey)
     {
-        var v = GetString(obj, key);
-        if (string.IsNullOrEmpty(v)) return [];
-        return v.Split('_')
-            .Where(x => !IsBlank(x))
-            .Select(x => uint.TryParse(x.Replace(",", ""), out var u) ? u : 0u)
-            .ToArray();
+        var prices = GetString(obj, priceKey).Split('_');
+        var volumes = GetString(obj, volumeKey).Split('_');
+        var count = Math.Min(prices.Length, volumes.Length);
+
+        var levels = new List<PriceLevel>(count);
+        for (var i = 0; i < count; i++)
+        {
+            if (ParseNullableDecimal(prices[i]) is { } price && ParseNullableInt64(volumes[i]) is { } volume)
+                levels.Add(new PriceLevel(price, volume));
+        }
+        return levels.AsReadOnly();
     }
 
     #endregion

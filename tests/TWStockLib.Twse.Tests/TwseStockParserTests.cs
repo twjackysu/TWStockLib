@@ -4,8 +4,6 @@ namespace TWStockLib.Twse.Tests;
 
 public class TwseStockParserTests
 {
-    private readonly TwseStockParser _parser = new();
-
     // ── 即時報價 ──────────────────────────────────────────────────────────────
 
     private const string QuoteJson = """
@@ -23,7 +21,7 @@ public class TwseStockParserTests
     [Fact]
     public void ParseRealtimeQuote_MapsAllFields()
     {
-        var quote = _parser.ParseRealtimeQuote(QuoteJson, MarketType.TSE);
+        var quote = TwseStockParser.ParseRealtimeQuote(QuoteJson, MarketType.TSE);
 
         Assert.NotNull(quote);
         Assert.Equal("2330", quote!.Symbol);
@@ -31,15 +29,25 @@ public class TwseStockParserTests
         Assert.Equal(MarketType.TSE, quote.Market);
         Assert.Equal(600.00m, quote.LastPrice);
         Assert.Equal(596.00m, quote.YesterdayClosingPrice);
-        Assert.Equal(new[] { 601.00m, 602.00m }, quote.Top5SellPrice);
-        Assert.Equal(new uint[] { 10, 20 }, quote.Top5SellVolume);
-        Assert.Equal(new[] { 599.00m, 598.00m }, quote.Top5BuyPrice);
+        Assert.Equal([new PriceLevel(601.00m, 10), new PriceLevel(602.00m, 20)], quote.Asks);
+        Assert.Equal([new PriceLevel(599.00m, 30), new PriceLevel(598.00m, 40)], quote.Bids);
+        Assert.Equal(20_000L, quote.TotalVolume);
+        Assert.Equal(new DateTimeOffset(2023, 11, 3, 16, 26, 40, TimeSpan.FromHours(8)), quote.SyncTime);
     }
 
     [Fact]
     public void ParseRealtimeQuote_EmptyMsgArray_ReturnsNull()
     {
-        Assert.Null(_parser.ParseRealtimeQuote("""{"msgArray":[]}""", MarketType.TSE));
+        Assert.Null(TwseStockParser.ParseRealtimeQuote("""{"msgArray":[]}""", MarketType.TSE));
+    }
+
+    [Fact]
+    public void ParseRealtimeQuote_UnknownSymbolOrWrongMarket_ReturnsNull()
+    {
+        // MIS 對查無代號（tse_ZZZZ）與市場錯誤（otc_2330）都回這筆佔位資料（實際回應節錄）
+        var json = """{"msgArray":[{"tv":"-","s":"-","c":"","z":"-"}],"rtcode":"0000","rtmessage":"OK"}""";
+
+        Assert.Null(TwseStockParser.ParseRealtimeQuote(json, MarketType.OTC));
     }
 
     [Fact]
@@ -47,7 +55,7 @@ public class TwseStockParserTests
     {
         var json = """{"msgArray":[{"c":"2330","n":"台積電","z":"-","o":"-"}]}""";
 
-        var quote = _parser.ParseRealtimeQuote(json, MarketType.TSE);
+        var quote = TwseStockParser.ParseRealtimeQuote(json, MarketType.TSE);
 
         Assert.NotNull(quote);
         Assert.Null(quote!.LastPrice);
@@ -60,12 +68,24 @@ public class TwseStockParserTests
         // 指數沒有漲跌停：u / w 為「-」，不該變成 0 這種看似合法的價格
         var json = """{"msgArray":[{"c":"t00","n":"發行量加權股價指數","z":"23100.12","y":"-","u":"-","w":"-"}]}""";
 
-        var quote = _parser.ParseRealtimeQuote(json, MarketType.TSE);
+        var quote = TwseStockParser.ParseRealtimeQuote(json, MarketType.TSE);
 
         Assert.NotNull(quote);
         Assert.Null(quote!.LimitUp);
         Assert.Null(quote.LimitDown);
         Assert.Null(quote.YesterdayClosingPrice);
+    }
+
+    [Fact]
+    public void ParseRealtimeQuote_AMissingLevel_DoesNotShiftPricesAgainstVolumes()
+    {
+        // 第二檔價格缺值：其餘檔位的價格與張數仍須依位置配對
+        var json = """{"msgArray":[{"c":"2330","n":"台積電","a":"601.00_-_603.00_","f":"10_20_30_"}]}""";
+
+        var quote = TwseStockParser.ParseRealtimeQuote(json, MarketType.TSE);
+
+        Assert.Equal([new PriceLevel(601.00m, 10), new PriceLevel(603.00m, 30)], quote!.Asks);
+        Assert.Empty(quote.Bids);
     }
 
     // ── TSE 歷史（STOCK_DAY）─────────────────────────────────────────────────
@@ -79,20 +99,21 @@ public class TwseStockParserTests
         ]}
         """;
 
-        var rows = _parser.ParseTwseHistory(json);
+        var rows = TwseStockParser.ParseTwseHistory(json);
 
         var row = Assert.Single(rows);
-        Assert.Equal(new DateTime(2019, 11, 1), row.Date); // 民國 108 → 西元 2019
-        Assert.Equal(1_000_000u, row.TradeVolume);
+        Assert.Equal(new DateOnly(2019, 11, 1), row.Date); // 民國 108 → 西元 2019
+        Assert.Equal(1_000_000L, row.TradeVolume);
         Assert.Equal(30.00m, row.OpeningPrice);
         Assert.Equal(30.50m, row.ClosingPrice);
-        Assert.Equal(500u, row.NumberOfDeals);
+        Assert.Equal(0.50m, row.Change);
+        Assert.Equal(500L, row.NumberOfDeals);
     }
 
     [Fact]
     public void ParseTwseHistory_NonOkStat_ReturnsEmpty()
     {
-        Assert.Empty(_parser.ParseTwseHistory("""{"stat":"很抱歉，沒有符合條件的資料!"}"""));
+        Assert.Empty(TwseStockParser.ParseTwseHistory("""{"stat":"很抱歉，沒有符合條件的資料!"}"""));
     }
 
     [Fact]
@@ -107,10 +128,10 @@ public class TwseStockParserTests
         CultureInfo.CurrentCulture = new CultureInfo("de-DE"); // 「.」是千分位、「,」是小數點
         try
         {
-            var row = Assert.Single(_parser.ParseTwseHistory(json));
+            var row = Assert.Single(TwseStockParser.ParseTwseHistory(json));
 
             Assert.Equal(30.50m, row.ClosingPrice);
-            Assert.Equal(30_000_000m, row.TurnOverInValue);
+            Assert.Equal(30_000_000m, row.TurnoverValue);
         }
         finally
         {
@@ -130,13 +151,13 @@ public class TwseStockParserTests
         ]}
         """;
 
-        var row = Assert.Single(_parser.ParseTwseHistory(json));
+        var row = Assert.Single(TwseStockParser.ParseTwseHistory(json));
 
-        Assert.Equal(new DateTime(2019, 11, 1), row.Date);
+        Assert.Equal(new DateOnly(2019, 11, 1), row.Date);
     }
 
     [Fact]
-    public void ParseTwseHistory_NoTradeDay_IsKeptWithZeroPrices()
+    public void ParseTwseHistory_NoTradeDay_IsKeptWithoutPrices()
     {
         const string json = """
         {"stat":"OK","data":[
@@ -144,11 +165,45 @@ public class TwseStockParserTests
         ]}
         """;
 
-        var row = Assert.Single(_parser.ParseTwseHistory(json));
+        var row = Assert.Single(TwseStockParser.ParseTwseHistory(json));
 
-        Assert.Equal(new DateTime(2019, 11, 1), row.Date);
-        Assert.Equal(0m, row.ClosingPrice);
-        Assert.Equal(0u, row.TradeVolume);
+        Assert.Equal(new DateOnly(2019, 11, 1), row.Date);
+        Assert.Null(row.OpeningPrice);
+        Assert.Null(row.ClosingPrice);
+        Assert.Equal(0L, row.TradeVolume);
+    }
+
+    [Fact]
+    public void ParseTwseHistory_ExRightsDay_HasNoChange()
+    {
+        // 除權息當日不比價，漲跌價差欄是「X0.00」
+        const string json = """
+        {"stat":"OK","data":[
+            ["108/11/01","1,000,000","30,000,000","30.00","31.00","29.50","30.50","X0.00","500"]
+        ]}
+        """;
+
+        var row = Assert.Single(TwseStockParser.ParseTwseHistory(json));
+
+        Assert.Null(row.Change);
+        Assert.Equal(30.50m, row.ClosingPrice);
+    }
+
+    [Fact]
+    public void ParsedCollections_AreReadOnly_SoTheyCanBeSharedThroughTheCache()
+    {
+        const string json = """
+        {"stat":"OK","data":[
+            ["108/11/01","1,000,000","30,000,000","30.00","31.00","29.50","30.50","+0.50","500"]
+        ]}
+        """;
+        var quote = TwseStockParser.ParseRealtimeQuote(QuoteJson, MarketType.TSE)!;
+        var history = TwseStockParser.ParseTwseHistory(json);
+        var list = TwseStockParser.ParseStockList(IsinHtml, MarketType.TSE, includeWarrant: true);
+
+        Assert.True(((ICollection<PriceLevel>)quote.Asks).IsReadOnly);
+        Assert.True(((ICollection<StockHistory>)history).IsReadOnly);
+        Assert.True(((ICollection<KeyValuePair<string, StockData>>)list).IsReadOnly);
     }
 
     // ── OTC 歷史（TPEX st43）─────────────────────────────────────────────────
@@ -163,20 +218,21 @@ public class TwseStockParserTests
         ]}]}
         """;
 
-        var rows = _parser.ParseTpexHistory(json);
+        var rows = TwseStockParser.ParseTpexHistory(json);
 
         var row = Assert.Single(rows);
-        Assert.Equal(new DateTime(2025, 9, 1), row.Date);
-        Assert.Equal(1_253_000u, row.TradeVolume);
-        Assert.Equal(1_521_831_000m, row.TurnOverInValue);
+        Assert.Equal(new DateOnly(2025, 9, 1), row.Date);
+        Assert.Equal(1_253_000L, row.TradeVolume);
+        Assert.Equal(1_521_831_000m, row.TurnoverValue);
         Assert.Equal(1_220m, row.ClosingPrice);
-        Assert.Equal(2_466u, row.NumberOfDeals);
+        Assert.Equal(-25m, row.Change);
+        Assert.Equal(2_466L, row.NumberOfDeals);
     }
 
     [Fact]
     public void ParseTpexHistory_NoTables_ReturnsEmpty()
     {
-        Assert.Empty(_parser.ParseTpexHistory("""{"tables":[]}"""));
+        Assert.Empty(TwseStockParser.ParseTpexHistory("""{"tables":[]}"""));
     }
 
     // ── 股票清單（ISIN HTML）──────────────────────────────────────────────────
@@ -195,7 +251,7 @@ public class TwseStockParserTests
     [Fact]
     public void ParseStockList_ExcludesWarrants_IncludingBullBearCertificates_ByDefault()
     {
-        var list = _parser.ParseStockList(IsinHtml, MarketType.TSE, includeWarrant: false);
+        var list = TwseStockParser.ParseStockList(IsinHtml, MarketType.TSE, includeWarrant: false);
 
         var entry = Assert.Single(list);
         Assert.Equal("2330", entry.Key);
@@ -206,7 +262,7 @@ public class TwseStockParserTests
     [Fact]
     public void ParseStockList_IncludesWarrants_WhenRequested()
     {
-        var list = _parser.ParseStockList(IsinHtml, MarketType.TSE, includeWarrant: true);
+        var list = TwseStockParser.ParseStockList(IsinHtml, MarketType.TSE, includeWarrant: true);
 
         Assert.Equal(3, list.Count);
         Assert.Contains("0050", list.Keys);

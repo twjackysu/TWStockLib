@@ -10,10 +10,14 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <PackageId>TWStockLib</PackageId>
-    <Version>2.3.0</Version>
+    <Version>3.0.0</Version>
     <Description>台灣股票類別庫 — 證交所（TSE）/ 櫃買（OTC）資料來源實作。</Description>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
   </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="TWStockLib.Twse.Tests" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\TWStockLib.Core\TWStockLib.Core.csproj" />

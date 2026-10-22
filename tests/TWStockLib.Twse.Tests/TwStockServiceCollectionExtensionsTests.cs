@@ -1,11 +1,9 @@
 using Microsoft.Extensions.DependencyInjection;
 using TWStockLib.Abstractions;
-using TWStockLib.Cache;
-using TWStockLib.Services;
 
 namespace TWStockLib.Twse.Tests;
 
-public class ServiceCollectionExtensionsTests
+public class TwStockServiceCollectionExtensionsTests
 {
     private static ServiceProvider Build(Action<IServiceCollection> register)
     {
@@ -43,7 +41,8 @@ public class ServiceCollectionExtensionsTests
 
     private sealed class CustomCache : ICacheService
     {
-        public Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan? expiry = null) => factory();
+        public Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry) => factory();
+        public Task<T> RefreshAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry) => factory();
     }
 
     [Fact]

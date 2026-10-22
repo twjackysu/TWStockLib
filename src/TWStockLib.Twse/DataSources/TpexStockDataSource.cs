@@ -1,34 +1,26 @@
-using Microsoft.Extensions.Logging;
-using TWStockLib.Cache;
-using TWStockLib.Models;
+using System.Globalization;
+using TWStockLib.Abstractions;
 using TWStockLib.Twse.Http;
 using TWStockLib.Twse.Parsers;
 
 namespace TWStockLib.Twse.DataSources;
 
 /// <summary>上櫃（OTC，櫃買中心 TPEX）資料來源。</summary>
-public sealed class TpexStockDataSource : TwseFamilyDataSourceBase
+internal sealed class TpexStockDataSource(IStockHttpFetcher fetcher, ICacheService cache, TimeProvider timeProvider)
+    : TwseFamilyDataSourceBase(fetcher, cache, timeProvider)
 {
-    public TpexStockDataSource(
-        IStockHttpFetcher fetcher, IStockParser parser, ICacheService cache,
-        ILogger<TpexStockDataSource> logger)
-        : base(fetcher, parser, cache, logger) { }
-
-    public TpexStockDataSource(
-        IStockHttpFetcher fetcher, IStockParser parser, ICacheService cache,
-        ILogger<TpexStockDataSource> logger, TimeProvider timeProvider)
-        : base(fetcher, parser, cache, logger, timeProvider) { }
-
     public override MarketType Market => MarketType.OTC;
     protected override string MarketKeyPrefix => "otc";
     protected override int IsinStrMode => 4;
 
     protected override Task<IReadOnlyList<StockHistory>> FetchMonthAsync(
-        string symbol, DateTime month, CancellationToken ct)
+        string symbol, DateOnly month, CancellationToken ct)
         => CachedMonth(symbol, month, async () =>
         {
-            var url = $"https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock/st43_result.php?l=zh-tw&date={month:yyyy/MM/dd}&code={symbol}";
+            // 「/」在自訂格式中是文化相依的日期分隔符號，必須用 InvariantCulture 才保證是斜線
+            var url = string.Create(CultureInfo.InvariantCulture,
+                $"https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock/st43_result.php?l=zh-tw&date={month:yyyy/MM/dd}&code={symbol}");
             var json = await Fetcher.GetStringAsync(url, ct);
-            return Parser.ParseTpexHistory(json);
+            return TwseStockParser.ParseTpexHistory(json);
         });
 }

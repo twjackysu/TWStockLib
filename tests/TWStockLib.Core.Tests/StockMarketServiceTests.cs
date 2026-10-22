@@ -38,7 +38,7 @@ public class StockMarketServiceTests
         var result = await BuildService(tse, otc).GetRealtimeQuoteAsync("2330", MarketType.TSE);
 
         Assert.True(result.IsSuccess);
-        Assert.Same(quote, result.Value);
+        Assert.Equivalent(quote, result.Value);
         await otc.DidNotReceive().FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
@@ -118,7 +118,7 @@ public class StockMarketServiceTests
         var result = await BuildService(tse).GetRealtimeQuoteAsync("2330", MarketType.TSE, bypassCache: true);
 
         Assert.True(result.IsSuccess);
-        Assert.Same(quote, result.Value);
+        Assert.Equivalent(quote, result.Value);
         await tse.DidNotReceive().FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
@@ -132,7 +132,7 @@ public class StockMarketServiceTests
 
         var result = await BuildService(tse).GetRealtimeQuoteAsync("2330", MarketType.TSE, bypassCache: false);
 
-        Assert.Same(quote, result.Value);
+        Assert.Equivalent(quote, result.Value);
         await tse.DidNotReceive().FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
     }
 
@@ -183,5 +183,161 @@ public class StockMarketServiceTests
         await service.GetRealtimeQuoteAsync("2330", MarketType.TSE, bypassCache: true);
 
         observer.Received(1).OnPriceChanged("2330", 1010m, 1000m);
+    }
+
+    // ── 觀察者的例外不影響查詢結果 ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task GetRealtimeQuoteAsync_AnObserverThrows_StillReturnsTheQuote_AndNotifiesTheOthers()
+    {
+        var tse = FakeSource(MarketType.TSE);
+        tse.FetchRealtimeQuoteAsync("2330", Arg.Any<CancellationToken>())
+           .Returns(new StockQuote { Symbol = "2330", Name = "台積電", Market = MarketType.TSE, LastPrice = 1000m },
+                    new StockQuote { Symbol = "2330", Name = "台積電", Market = MarketType.TSE, LastPrice = 1010m });
+        var service = BuildService(tse);
+        var faulty = Substitute.For<IStockPriceObserver>();
+        faulty.When(o => o.OnPriceChanged(Arg.Any<string>(), Arg.Any<decimal>(), Arg.Any<decimal>()))
+              .Do(_ => throw new InvalidOperationException("observer bug"));
+        var healthy = Substitute.For<IStockPriceObserver>();
+        service.SubscribePriceChanges("2330", faulty);
+        service.SubscribePriceChanges("2330", healthy);
+
+        await service.GetRealtimeQuoteAsync("2330", MarketType.TSE);
+        var result = await service.GetRealtimeQuoteAsync("2330", MarketType.TSE);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1010m, result.Value!.LastPrice);
+        healthy.Received(1).OnPriceChanged("2330", 1010m, 1000m);
+    }
+
+    // ── 取消與逾時 ────────────────────────────────────────────────────────────
+
+    private static readonly Dictionary<string, Func<IStockMarketService, CancellationToken, Task<string?>>> Queries = new()
+    {
+        ["quote"] = async (s, ct) => (await s.GetRealtimeQuoteAsync("2330", MarketType.TSE, ct)).ErrorCode,
+        ["quote-bypass"] = async (s, ct) => (await s.GetRealtimeQuoteAsync("2330", MarketType.TSE, bypassCache: true, ct)).ErrorCode,
+        ["history"] = async (s, ct) => (await s.GetHistoricalDataAsync(
+            "2330", new DateTime(2025, 9, 1), new DateTime(2025, 9, 30), MarketType.TSE, ct)).ErrorCode,
+        ["list"] = async (s, ct) => (await s.GetStockListAsync(MarketType.TSE, ct: ct)).ErrorCode,
+        ["all"] = async (s, ct) => (await s.GetAllStockListAsync(ct: ct)).ErrorCode,
+    };
+
+    /// <summary>所有查詢都以 <paramref name="error"/>（可取得呼叫端傳入的 token）失敗的資料來源。</summary>
+    private static IStockDataSource FailingSource(MarketType market, Func<CancellationToken, Exception> error)
+    {
+        var source = FakeSource(market);
+        source.FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+              .Returns<StockQuote?>(ci => throw error(ci.Arg<CancellationToken>()));
+        source.FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+              .Returns<StockQuote?>(ci => throw error(ci.Arg<CancellationToken>()));
+        source.FetchHistoricalDataAsync(Arg.Any<string>(), Arg.Any<DateTime>(), Arg.Any<DateTime>(), Arg.Any<CancellationToken>())
+              .Returns<IReadOnlyList<StockHistory>>(ci => throw error(ci.Arg<CancellationToken>()));
+        source.FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
+              .Returns<IReadOnlyDictionary<string, StockData>>(ci => throw error(ci.Arg<CancellationToken>()));
+        return source;
+    }
+
+    [Theory]
+    [InlineData("quote")]
+    [InlineData("quote-bypass")]
+    [InlineData("history")]
+    [InlineData("list")]
+    [InlineData("all")]
+    public async Task CallerCancellation_IsThrown_NotTurnedIntoAFailedResult(string query)
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var service = BuildService(FailingSource(MarketType.TSE, ct => new OperationCanceledException(ct)));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Queries[query](service, cts.Token));
+    }
+
+    [Theory]
+    [InlineData("quote")]
+    [InlineData("quote-bypass")]
+    [InlineData("history")]
+    [InlineData("list")]
+    [InlineData("all")]
+    public async Task AnHttpClientTimeout_BecomesATimeoutFailure(string query)
+    {
+        // HttpClient 逾時丟的是 TaskCanceledException，但呼叫端的 token 並沒有被取消
+        var service = BuildService(FailingSource(MarketType.TSE, _ => new TaskCanceledException("HttpClient.Timeout elapsed")));
+
+        var errorCode = await Queries[query](service, CancellationToken.None);
+
+        Assert.Equal(StockErrorCodes.Timeout, errorCode);
+    }
+
+    // ── 回傳呼叫端專屬的複本 ──────────────────────────────────────────────────
+
+    [Fact]
+    public async Task GetRealtimeQuoteAsync_MutatingTheResult_DoesNotAffectLaterCalls()
+    {
+        var tse = FakeSource(MarketType.TSE);
+        var cached = new StockQuote
+        {
+            Symbol = "2330", Name = "台積電", Market = MarketType.TSE, LastPrice = 1000m, Top5SellPrice = [1001m],
+        };
+        tse.FetchRealtimeQuoteAsync("2330", Arg.Any<CancellationToken>()).Returns(cached);
+        var service = BuildService(tse);
+
+        var first = (await service.GetRealtimeQuoteAsync("2330", MarketType.TSE)).Value!;
+        first.LastPrice = 1m;
+        first.Top5SellPrice[0] = 1m;
+        var second = (await service.GetRealtimeQuoteAsync("2330", MarketType.TSE)).Value!;
+
+        Assert.Equal(1000m, second.LastPrice);
+        Assert.Equal(1001m, second.Top5SellPrice[0]);
+    }
+
+    [Fact]
+    public async Task GetHistoricalDataAsync_MutatingTheResult_DoesNotAffectLaterCalls()
+    {
+        var tse = FakeSource(MarketType.TSE);
+        IReadOnlyList<StockHistory> cached = [new StockHistory { Date = new DateTime(2025, 9, 1), ClosingPrice = 1165m }];
+        tse.FetchHistoricalDataAsync("2330", Arg.Any<DateTime>(), Arg.Any<DateTime>(), Arg.Any<CancellationToken>())
+           .Returns(cached);
+        var service = BuildService(tse);
+        var (from, to) = (new DateTime(2025, 9, 1), new DateTime(2025, 9, 30));
+
+        var first = (await service.GetHistoricalDataAsync("2330", from, to, MarketType.TSE)).Value!;
+        first[0].ClosingPrice = 1m;
+        var second = (await service.GetHistoricalDataAsync("2330", from, to, MarketType.TSE)).Value!;
+
+        Assert.Equal(1165m, Assert.Single(second).ClosingPrice);
+    }
+
+    [Fact]
+    public async Task GetStockListAsync_MutatingTheResult_DoesNotAffectLaterCalls()
+    {
+        var tse = FakeSource(MarketType.TSE);
+        tse.FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
+           .Returns(new Dictionary<string, StockData>
+           {
+               ["2330"] = new() { Symbol = "2330", Name = "台積電", Market = MarketType.TSE },
+           });
+        var service = BuildService(tse);
+
+        var first = (await service.GetStockListAsync(MarketType.TSE)).Value!;
+        first["2330"].Name = "改掉";
+        var second = (await service.GetStockListAsync(MarketType.TSE)).Value!;
+
+        Assert.Equal("台積電", second["2330"].Name);
+    }
+
+    // ── 同一市場重複註冊 ──────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task TwoSourcesForTheSameMarket_TheLastRegisteredWins()
+    {
+        var replaced = FakeSource(MarketType.TSE);
+        var replacement = FakeSource(MarketType.TSE);
+        replacement.FetchRealtimeQuoteAsync("2330", Arg.Any<CancellationToken>())
+                   .Returns(new StockQuote { Symbol = "2330", Name = "台積電", Market = MarketType.TSE, LastPrice = 1000m });
+
+        var result = await BuildService(replaced, replacement).GetRealtimeQuoteAsync("2330", MarketType.TSE);
+
+        Assert.True(result.IsSuccess);
+        await replaced.DidNotReceive().FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 }

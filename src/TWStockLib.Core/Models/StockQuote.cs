@@ -30,4 +30,15 @@ public class StockQuote : StockData
     public decimal? LimitUp { get; set; }
     /// <summary>跌停點</summary>
     public decimal? LimitDown { get; set; }
+
+    /// <inheritdoc />
+    internal override StockQuote Copy()
+    {
+        var copy = (StockQuote)MemberwiseClone();
+        copy.Top5SellPrice = (decimal[])Top5SellPrice.Clone();
+        copy.Top5SellVolume = (uint[])Top5SellVolume.Clone();
+        copy.Top5BuyPrice = (decimal[])Top5BuyPrice.Clone();
+        copy.Top5BuyVolume = (uint[])Top5BuyVolume.Clone();
+        return copy;
+    }
 }

@@ -15,19 +15,28 @@ public abstract class TwseFamilyDataSourceBase : IStockDataSource
 {
     private static readonly TimeSpan QuoteTtl = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan DailyTtl = TimeSpan.FromDays(1);
+    private static readonly TimeSpan CurrentMonthHistoryTtl = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan TaiwanUtcOffset = TimeSpan.FromHours(8);
 
     protected readonly IStockHttpFetcher Fetcher;
     protected readonly IStockParser Parser;
     protected readonly ICacheService Cache;
     protected readonly ILogger Logger;
+    private readonly TimeProvider _timeProvider;
 
     protected TwseFamilyDataSourceBase(
         IStockHttpFetcher fetcher, IStockParser parser, ICacheService cache, ILogger logger)
+        : this(fetcher, parser, cache, logger, TimeProvider.System) { }
+
+    protected TwseFamilyDataSourceBase(
+        IStockHttpFetcher fetcher, IStockParser parser, ICacheService cache, ILogger logger,
+        TimeProvider timeProvider)
     {
         Fetcher = fetcher;
         Parser = parser;
         Cache = cache;
         Logger = logger;
+        _timeProvider = timeProvider;
     }
 
     public abstract MarketType Market { get; }
@@ -92,6 +101,17 @@ public abstract class TwseFamilyDataSourceBase : IStockDataSource
         string symbol, DateTime month, Func<Task<IReadOnlyList<StockHistory>>> fetch)
     {
         var cacheKey = $"history_{Market}_{symbol}_{month:yyyyMM}";
-        return Cache.GetOrSetAsync(cacheKey, fetch, DailyTtl);
+        return Cache.GetOrSetAsync(cacheKey, fetch, HistoryTtl(month));
+    }
+
+    /// <summary>
+    /// 已結束的月份資料不再變動，快取一天；當月（台灣時間）每個交易日收盤後會多一列，只短暫快取，
+    /// 未來月份同理，避免月份開始後仍拿到先前快取的空資料。
+    /// </summary>
+    private TimeSpan HistoryTtl(DateTime month)
+    {
+        var taiwanNow = _timeProvider.GetUtcNow().ToOffset(TaiwanUtcOffset);
+        var currentMonth = new DateTime(taiwanNow.Year, taiwanNow.Month, 1);
+        return new DateTime(month.Year, month.Month, 1) < currentMonth ? DailyTtl : CurrentMonthHistoryTtl;
     }
 }

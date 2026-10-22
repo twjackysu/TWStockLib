@@ -1,5 +1,7 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text.Json;
+using AngleSharp.Dom;
 using AngleSharp.Html.Parser;
 using TWStockLib.Models;
 
@@ -8,6 +10,12 @@ namespace TWStockLib.Twse.Parsers;
 /// <inheritdoc cref="IStockParser" />
 public sealed class TwseStockParser : IStockParser
 {
+    /// <summary>櫃買 st43 的成交量單位是「仟股」、成交金額是「仟元」；證交所 STOCK_DAY 是「股」、「元」。</summary>
+    private const uint TpexUnitScale = 1000;
+
+    /// <summary>ISIN 表格欄位依序為：代號及名稱、ISIN、上市日、市場別、產業別、CFICode、備註。</summary>
+    private const int IsinCfiCodeColumn = 5;
+
     public StockQuote? ParseRealtimeQuote(string json, MarketType market)
     {
         using var doc = JsonDocument.Parse(json);
@@ -35,9 +43,9 @@ public sealed class TwseStockParser : IStockParser
             HighestPrice = GetNullableDecimal(item, "h"),
             LowestPrice = GetNullableDecimal(item, "l"),
             OpeningPrice = GetNullableDecimal(item, "o"),
-            YesterdayClosingPrice = GetDecimal(item, "y"),
-            LimitUp = GetDecimal(item, "u"),
-            LimitDown = GetDecimal(item, "w"),
+            YesterdayClosingPrice = GetNullableDecimal(item, "y"),
+            LimitUp = GetNullableDecimal(item, "u"),
+            LimitDown = GetNullableDecimal(item, "w"),
         };
     }
 
@@ -51,7 +59,7 @@ public sealed class TwseStockParser : IStockParser
         if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
             return [];
 
-        return MapRows(data);
+        return MapRows(data, unitScale: 1);
     }
 
     public IReadOnlyList<StockHistory> ParseTpexHistory(string json)
@@ -70,7 +78,7 @@ public sealed class TwseStockParser : IStockParser
         if (!firstTable.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
             return [];
 
-        return MapRows(data);
+        return MapRows(data, TpexUnitScale);
     }
 
     public IReadOnlyDictionary<string, StockData> ParseStockList(string html, MarketType market, bool includeWarrant)
@@ -84,19 +92,10 @@ public sealed class TwseStockParser : IStockParser
         var result = new Dictionary<string, StockData>();
         foreach (var el in elements)
         {
-            var text = el.TextContent;
-            if (text.Length < 3)
+            if (!includeWarrant && IsWarrant(el))
                 continue;
 
-            // 過濾權證（倒數第 3 個字為「購」或「售」）
-            if (!includeWarrant)
-            {
-                var marker = text[text.Length - 3];
-                if (marker == '購' || marker == '售')
-                    continue;
-            }
-
-            var parts = text.Split('　'); // 全形空白
+            var parts = el.TextContent.Split('　'); // 全形空白
             if (parts.Length < 2)
                 continue;
 
@@ -107,29 +106,126 @@ public sealed class TwseStockParser : IStockParser
         return result;
     }
 
-    private static IReadOnlyList<StockHistory> MapRows(JsonElement dataArray)
+    /// <summary>
+    /// 以該列的 CFICode 判斷是否為權證：ISO 10962 的「RW」開頭即權證，認購、認售與牛熊證都在內。
+    /// 名稱字尾（購 / 售）無法涵蓋牛熊證（如「臺股指凱基5A牛04」）。
+    /// </summary>
+    private static bool IsWarrant(IElement firstCell)
+    {
+        var cells = firstCell.ParentElement?.Children;
+        return cells is not null
+            && cells.Length > IsinCfiCodeColumn
+            && cells[IsinCfiCodeColumn].TextContent.Trim().StartsWith("RW", StringComparison.Ordinal);
+    }
+
+    #region History Rows
+
+    private static IReadOnlyList<StockHistory> MapRows(JsonElement dataArray, uint unitScale)
     {
         var result = new List<StockHistory>(dataArray.GetArrayLength());
         foreach (var row in dataArray.EnumerateArray())
         {
-            if (row.ValueKind != JsonValueKind.Array)
-                continue;
-
-            var cells = new List<string>(row.GetArrayLength());
-            foreach (var cell in row.EnumerateArray())
-                cells.Add(cell.ValueKind == JsonValueKind.String ? cell.GetString() ?? string.Empty : cell.ToString());
-
-            result.Add(new StockHistory(cells));
+            if (TryMapRow(row, unitScale, out var history))
+                result.Add(history);
         }
         return result;
     }
+
+    /// <summary>
+    /// 欄位依序為：日期、成交量、成交金額、開、高、低、收、漲跌價差、成交筆數。
+    /// 成交量與金額乘上 <paramref name="unitScale"/> 換算成「股」、「元」。
+    /// 任一欄格式不符就略過整列，不以預設值捏造資料；無成交的「--」視為 0。
+    /// </summary>
+    private static bool TryMapRow(JsonElement row, uint unitScale, [NotNullWhen(true)] out StockHistory? history)
+    {
+        history = null;
+        if (row.ValueKind != JsonValueKind.Array || row.GetArrayLength() < 9)
+            return false;
+
+        var cells = row.EnumerateArray().Select(CellText).ToArray();
+        if (!TryParseRocDate(cells[0], out var date)
+            || !TryParseScaledUInt32(cells[1], unitScale, out var volume)
+            || !TryParseHistoryDecimal(cells[2], out var turnover)
+            || !TryParseHistoryDecimal(cells[3], out var open)
+            || !TryParseHistoryDecimal(cells[4], out var high)
+            || !TryParseHistoryDecimal(cells[5], out var low)
+            || !TryParseHistoryDecimal(cells[6], out var close)
+            || !TryParseScaledUInt32(cells[8], 1, out var deals))
+        {
+            return false;
+        }
+
+        history = new StockHistory
+        {
+            Date = date,
+            TradeVolume = volume,
+            TurnOverInValue = turnover * unitScale,
+            OpeningPrice = open,
+            HighestPrice = high,
+            LowestPrice = low,
+            ClosingPrice = close,
+            DailyPricing = cells[7],
+            NumberOfDeals = deals,
+        };
+        return true;
+    }
+
+    private static string CellText(JsonElement cell)
+        => cell.ValueKind == JsonValueKind.String ? cell.GetString() ?? string.Empty : cell.ToString();
+
+    /// <summary>解析「114/09/01」（民國年）或「2025-09-01」（西元年）。</summary>
+    private static bool TryParseRocDate(string text, out DateTime date)
+    {
+        date = default;
+        var parts = text.Replace("＊", "").Trim().Split('/', '-');
+        if (parts.Length != 3
+            || !int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var year)
+            || !int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var month)
+            || !int.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out var day))
+        {
+            return false;
+        }
+
+        if (year < 1000)
+            year += 1911; // 民國年
+
+        if (year > 9999 || month is < 1 or > 12 || day < 1 || day > DateTime.DaysInMonth(year, month))
+            return false;
+
+        date = new DateTime(year, month, day);
+        return true;
+    }
+
+    private static bool TryParseHistoryDecimal(string text, out decimal value)
+    {
+        value = 0m;
+        return IsBlank(text.Trim())
+            || decimal.TryParse(text, NumberStyles.Number, CultureInfo.InvariantCulture, out value);
+    }
+
+    private static bool TryParseScaledUInt32(string text, uint scale, out uint value)
+    {
+        value = 0;
+        if (IsBlank(text.Trim()))
+            return true;
+        if (!ulong.TryParse(text, NumberStyles.Integer | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out var raw)
+            || raw > uint.MaxValue / scale)
+        {
+            return false;
+        }
+
+        value = (uint)(raw * scale);
+        return true;
+    }
+
+    #endregion
 
     #region JSON Helpers
 
     private static string GetString(JsonElement obj, string key)
         => obj.TryGetProperty(key, out var p) ? p.GetString() ?? string.Empty : string.Empty;
 
-    private static bool IsBlank(string? v) => string.IsNullOrEmpty(v) || v == "-";
+    private static bool IsBlank(string? v) => string.IsNullOrEmpty(v) || v is "-" or "--";
 
     private static decimal? GetNullableDecimal(JsonElement obj, string key)
     {
@@ -137,9 +233,6 @@ public sealed class TwseStockParser : IStockParser
         if (IsBlank(v)) return null;
         return decimal.TryParse(v, NumberStyles.Any, CultureInfo.InvariantCulture, out var d) ? d : null;
     }
-
-    private static decimal GetDecimal(JsonElement obj, string key)
-        => GetNullableDecimal(obj, key) ?? 0m;
 
     private static uint? GetNullableUInt32(JsonElement obj, string key)
     {

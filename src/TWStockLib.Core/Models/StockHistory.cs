@@ -1,9 +1,17 @@
 using System.Diagnostics;
+using System.Globalization;
 
 namespace TWStockLib.Models;
 
 public class StockHistory
 {
+    public StockHistory() { }
+
+    /// <summary>
+    /// 舊版的「原始字串列 → 模型」建構式。解析已移到各資料來源的 parser，函式庫本身不再使用它；
+    /// 解析失敗時會以今天日期、數值 0 填入，無法分辨真假資料。
+    /// </summary>
+    [Obsolete("解析已移到資料來源的 parser，此建構式將於 3.0 移除。請改用物件初始設定式。")]
     public StockHistory(List<string> data)
     {
         try
@@ -13,18 +21,18 @@ public class StockHistory
                 SetDefaultValues();
                 return;
             }
-            
+
             // 處理日期格式
             var dateStr = data[0]?.Replace(",", "").Replace("＊", "").Trim() ?? "";
             List<int> date;
-            
+
             // 處理不同的日期格式
             if (dateStr.Contains('/'))
             {
                 try
                 {
                     // 處理 "112/11/01" 格式
-                    date = dateStr.Split('/').Select(x => Convert.ToInt32(x)).ToList();
+                    date = dateStr.Split('/').Select(x => Convert.ToInt32(x, CultureInfo.InvariantCulture)).ToList();
                     if (date.Count >= 3)
                     {
                         // 如果第一個數字小於 200，假設是民國年
@@ -52,7 +60,7 @@ public class StockHistory
                 try
                 {
                     // 處理 "2023-11-01" 格式
-                    date = dateStr.Split('-').Select(x => Convert.ToInt32(x)).ToList();
+                    date = dateStr.Split('-').Select(x => Convert.ToInt32(x, CultureInfo.InvariantCulture)).ToList();
                     if (date.Count >= 3)
                     {
                         Date = new DateTime(date[0], date[1], date[2]);
@@ -72,7 +80,7 @@ public class StockHistory
                 // 默認格式
                 Date = DateTime.Now;
             }
-            
+
             // 處理數值
             TradeVolume = ParseUInt32(data.Count > 1 ? data[1] : null);
             TurnOverInValue = ParseDecimal(data.Count > 2 ? data[2] : null);
@@ -89,7 +97,7 @@ public class StockHistory
             SetDefaultValues();
         }
     }
-    
+
     private void SetDefaultValues()
     {
         Date = DateTime.Now;
@@ -102,42 +110,45 @@ public class StockHistory
         DailyPricing = "0";
         NumberOfDeals = 0;
     }
-    
+
     private uint ParseUInt32(string? value)
     {
         if (string.IsNullOrEmpty(value) || value == "--" || value == "-")
             return 0;
-            
+
         try
         {
-            return Convert.ToUInt32(value.Replace(",", ""));
+            return Convert.ToUInt32(value.Replace(",", ""), CultureInfo.InvariantCulture);
         }
         catch
         {
             return 0;
         }
     }
-    
+
     private decimal ParseDecimal(string? value)
     {
         if (string.IsNullOrEmpty(value) || value == "--" || value == "-")
             return 0;
-            
+
         try
         {
-            return Convert.ToDecimal(value.Replace(",", ""));
+            return Convert.ToDecimal(value.Replace(",", ""), CultureInfo.InvariantCulture);
         }
         catch
         {
             return 0;
         }
     }
-    
+
+    /// <summary>複製一份獨立的實例，讓呼叫端拿到的物件與函式庫快取中的共用物件脫鉤。</summary>
+    internal StockHistory Copy() => (StockHistory)MemberwiseClone();
+
     /// <summary>日期</summary>
     public DateTime Date { get; set; }
     /// <summary>成交股數</summary>
     public uint TradeVolume { get; set; }
-    /// <summary>成交金額</summary>
+    /// <summary>成交金額（元）</summary>
     public decimal TurnOverInValue { get; set; }
     /// <summary>開盤價</summary>
     public decimal OpeningPrice { get; set; }

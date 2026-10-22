@@ -8,6 +8,8 @@ namespace TWStockLib.Services;
 /// <summary>
 /// 對外門面（Facade）：依 <see cref="MarketType"/> 路由到對應的 <see cref="IStockDataSource"/>，
 /// 統一例外處理為 <see cref="StockResult{T}"/>，並在報價更新時通知價格觀察者。
+/// 呼叫端取消（<see cref="CancellationToken"/>）時照 .NET 慣例拋出 <see cref="OperationCanceledException"/>。
+/// 回傳的模型都是呼叫端專屬的複本，修改它們不會影響函式庫內部的快取。
 /// </summary>
 public class StockMarketService : IStockMarketService
 {
@@ -15,43 +17,64 @@ public class StockMarketService : IStockMarketService
     private readonly IReadOnlyDictionary<MarketType, IStockDataSource> _sources;
     private readonly ILogger<StockMarketService> _logger;
 
+    /// <param name="sources">各市場的資料來源；同一市場註冊多個時以最後註冊的為準（與 DI 的單一解析慣例一致）。</param>
+    /// <param name="logger">記錄上游失敗。</param>
     public StockMarketService(IEnumerable<IStockDataSource> sources, ILogger<StockMarketService> logger)
     {
-        _sources = sources.ToDictionary(s => s.Market);
+        var byMarket = new Dictionary<MarketType, IStockDataSource>();
+        foreach (var source in sources)
+            byMarket[source.Market] = source;
+
+        _sources = byMarket;
         _logger = logger;
     }
 
     public Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(
         string symbol, MarketType market, CancellationToken ct = default)
-        => GetRealtimeQuoteCoreAsync(symbol, market, source => source.FetchRealtimeQuoteAsync(symbol, ct));
+        => GetRealtimeQuoteCoreAsync(symbol, market, source => source.FetchRealtimeQuoteAsync(symbol, ct), ct);
 
     public Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(
         string symbol, MarketType market, bool bypassCache, CancellationToken ct = default)
         => bypassCache
-            ? GetRealtimeQuoteCoreAsync(symbol, market, source => source.FetchRealtimeQuoteAsync(symbol, bypassCache: true, ct))
+            ? GetRealtimeQuoteCoreAsync(symbol, market, source => source.FetchRealtimeQuoteAsync(symbol, bypassCache: true, ct), ct)
             : GetRealtimeQuoteAsync(symbol, market, ct);
 
     private async Task<StockResult<StockQuote>> GetRealtimeQuoteCoreAsync(
-        string symbol, MarketType market, Func<IStockDataSource, Task<StockQuote?>> fetch)
+        string symbol, MarketType market, Func<IStockDataSource, Task<StockQuote?>> fetch, CancellationToken ct)
     {
         if (!_sources.TryGetValue(market, out var source))
             return StockResult<StockQuote>.Fail(StockErrorCodes.SourceNotFound, $"不支援的市場：{market}");
 
+        StockQuote? quote;
         try
         {
-            var quote = await fetch(source);
-            if (quote is null)
-                return StockResult<StockQuote>.Fail(StockErrorCodes.NotFound, $"查無報價：{symbol}");
-
-            if (quote.LastPrice.HasValue)
-                _priceSubject.UpdatePrice(symbol, quote.LastPrice.Value);
-
-            return StockResult<StockQuote>.Ok(quote);
+            quote = await fetch(source);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!IsCallerCancellation(ex, ct))
         {
             _logger.LogError(ex, "取得即時報價失敗：{Symbol} ({Market})", symbol, market);
-            return StockResult<StockQuote>.Fail(StockErrorCodes.UpstreamError, ex.Message);
+            return Failure<StockQuote>(ex);
+        }
+
+        if (quote is null)
+            return StockResult<StockQuote>.Fail(StockErrorCodes.NotFound, $"查無報價：{symbol}");
+
+        if (quote.LastPrice.HasValue)
+            NotifyPriceObservers(symbol, quote.LastPrice.Value);
+
+        return StockResult<StockQuote>.Ok(quote.Copy());
+    }
+
+    /// <summary>觀察者的例外屬於呼叫端自己的程式，只記錄、不影響已成功取得的報價。</summary>
+    private void NotifyPriceObservers(string symbol, decimal price)
+    {
+        try
+        {
+            _priceSubject.UpdatePrice(symbol, price);
+        }
+        catch (AggregateException ex)
+        {
+            _logger.LogWarning(ex, "價格觀察者處理 {Symbol} 的價格變動時發生例外", symbol);
         }
     }
 
@@ -64,12 +87,12 @@ public class StockMarketService : IStockMarketService
         try
         {
             var history = await source.FetchHistoricalDataAsync(symbol, startDate, endDate, ct);
-            return StockResult<IReadOnlyList<StockHistory>>.Ok(history);
+            return StockResult<IReadOnlyList<StockHistory>>.Ok(history.Select(h => h.Copy()).ToList());
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!IsCallerCancellation(ex, ct))
         {
             _logger.LogError(ex, "取得歷史資料失敗：{Symbol} ({Market})", symbol, market);
-            return StockResult<IReadOnlyList<StockHistory>>.Fail(StockErrorCodes.UpstreamError, ex.Message);
+            return Failure<IReadOnlyList<StockHistory>>(ex);
         }
     }
 
@@ -82,12 +105,13 @@ public class StockMarketService : IStockMarketService
         try
         {
             var list = await source.FetchStockListAsync(includeWarrant, ct);
-            return StockResult<IReadOnlyDictionary<string, StockData>>.Ok(list);
+            return StockResult<IReadOnlyDictionary<string, StockData>>.Ok(
+                list.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.Copy()));
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!IsCallerCancellation(ex, ct))
         {
             _logger.LogError(ex, "取得股票清單失敗：{Market}", market);
-            return StockResult<IReadOnlyDictionary<string, StockData>>.Fail(StockErrorCodes.UpstreamError, ex.Message);
+            return Failure<IReadOnlyDictionary<string, StockData>>(ex);
         }
     }
 
@@ -101,14 +125,14 @@ public class StockMarketService : IStockMarketService
             {
                 var list = await source.FetchStockListAsync(includeWarrant, ct);
                 foreach (var kvp in list)
-                    merged[kvp.Key] = kvp.Value;
+                    merged[kvp.Key] = kvp.Value.Copy();
             }
             return StockResult<IReadOnlyDictionary<string, StockData>>.Ok(merged);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!IsCallerCancellation(ex, ct))
         {
             _logger.LogError(ex, "取得完整股票清單失敗");
-            return StockResult<IReadOnlyDictionary<string, StockData>>.Fail(StockErrorCodes.UpstreamError, ex.Message);
+            return Failure<IReadOnlyDictionary<string, StockData>>(ex);
         }
     }
 
@@ -117,4 +141,14 @@ public class StockMarketService : IStockMarketService
 
     public void UnsubscribePriceChanges(string symbol, IStockPriceObserver observer)
         => _priceSubject.Unsubscribe(symbol, observer);
+
+    /// <summary>呼叫端自己取消的，不收斂成失敗結果，讓 <see cref="OperationCanceledException"/> 照常往外拋。</summary>
+    private static bool IsCallerCancellation(Exception ex, CancellationToken ct)
+        => ex is OperationCanceledException && ct.IsCancellationRequested;
+
+    /// <summary>不是呼叫端取消的 <see cref="OperationCanceledException"/>，是 HttpClient 逾時。</summary>
+    private static StockResult<T> Failure<T>(Exception ex)
+        => ex is OperationCanceledException
+            ? StockResult<T>.Fail(StockErrorCodes.Timeout, ex.Message)
+            : StockResult<T>.Fail(StockErrorCodes.UpstreamError, ex.Message);
 }

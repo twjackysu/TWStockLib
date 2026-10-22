@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using TWStockLib.Cache;
@@ -110,5 +111,41 @@ public class TwseFamilyDataSourceTests
 
         Assert.Null(quote!.LastPrice);
         Assert.Equal(22950.00m, quote.YesterdayClosingPrice);
+    }
+
+    // ── 歷史資料的快取時間 ────────────────────────────────────────────────────
+
+    private sealed class RecordingCache : ICacheService
+    {
+        public Dictionary<string, TimeSpan?> Expiries { get; } = [];
+
+        public Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan? expiry = null)
+        {
+            Expiries[key] = expiry;
+            return factory();
+        }
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
+    }
+
+    [Theory]
+    [InlineData("2025-09-15T10:00:00+08:00")]
+    [InlineData("2025-08-31T17:00:00+00:00")] // UTC 還在 8 月，台灣時間已是 9/1 凌晨
+    public async Task FetchHistoricalDataAsync_OnlyClosedMonthsAreCachedForADay(string now)
+    {
+        var cache = new RecordingCache();
+        var source = new TwseStockDataSource(
+            new FakeFetcher("""{"stat":"OK","data":[]}"""), new TwseStockParser(), cache,
+            NullLogger<TwseStockDataSource>.Instance,
+            new FixedTimeProvider(DateTimeOffset.Parse(now, CultureInfo.InvariantCulture)));
+
+        await source.FetchHistoricalDataAsync("2330", new DateTime(2025, 8, 1), new DateTime(2025, 10, 31));
+
+        Assert.Equal(TimeSpan.FromDays(1), cache.Expiries["history_TSE_2330_202508"]);
+        Assert.True(cache.Expiries["history_TSE_2330_202509"] < TimeSpan.FromHours(1), "當月只能短暫快取");
+        Assert.True(cache.Expiries["history_TSE_2330_202510"] < TimeSpan.FromHours(1), "未來月份只能短暫快取");
     }
 }

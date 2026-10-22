@@ -72,6 +72,8 @@ public class StockController : Controller
 ### 步驟 3：使用服務
 
 所有查詢方法皆為非同步，並回傳 `StockResult<T>`：以 `IsSuccess` 判斷成功，失敗時帶 `ErrorCode` / `ErrorMessage`。
+呼叫端用 `CancellationToken` 取消時，照 .NET 慣例拋出 `OperationCanceledException`，不會變成失敗結果。
+回傳的模型是呼叫端專屬的複本，修改它們不會影響函式庫內部的快取。
 
 #### 獲取股票清單
 
@@ -163,6 +165,7 @@ stock.UnsubscribePriceChanges("2330", observer);
 | `SOURCE_NOT_FOUND` | 找不到對應市場的資料來源 |
 | `NOT_FOUND` | 上游查無此股票 / 無資料 |
 | `UPSTREAM_ERROR` | 上游連線或回應錯誤 |
+| `TIMEOUT` | 上游在 HttpClient 逾時內沒有回應（2.3.0 起） |
 
 ## 支援的市場
 
@@ -173,7 +176,8 @@ stock.UnsubscribePriceChanges("2330", observer);
 
 1. 所有資料皆從網路即時獲取，需要連線。
 2. 歷史數據以月為單位查詢，跨月會自動合併。
-3. 即時報價快取 30 秒、股票清單與歷史快取 1 天，以減少上游請求。即時報價可用 `bypassCache: true` 略過快取。
+3. 即時報價快取 30 秒、股票清單與已結束月份的歷史快取 1 天、當月歷史快取 30 分鐘，以減少上游請求。即時報價可用 `bypassCache: true` 略過快取。
+4. 歷史資料的成交量一律是「股」、成交金額一律是「元」，上市與上櫃單位一致。
 
 ## 版本紀錄
 
@@ -181,11 +185,29 @@ stock.UnsubscribePriceChanges("2330", observer);
 
 | 版本 | 變更 |
 |------|------|
+| 2.3.0 | 修正多項資料與行為錯誤：上櫃歷史單位、牛熊證過濾、語系相依的解析、取消與逾時、價格訂閱的執行緒安全與生命週期等（見下方升級說明）；AngleSharp 最低版本升至 1.5.0（修補 GHSA-pgww-w46g-26qg） |
 | 2.2.1 | 套件內 DLL 的組件版本改為與套件版本一致（2.2.0 的 DLL 仍標示為 2.1.1），功能與 2.2.0 相同 |
 | 2.2.0 | 即時報價新增 `bypassCache` 參數，可略過內部 30 秒快取；新增成員皆有預設介面實作，既有實作不需修改 |
 | 2.1.1 | 證交所 / 櫃買中心端點改走 https |
 | 2.1.0 | 新增 `net10.0` 支援 |
 | 2.0.0 | 架構重構，API 有破壞性變更（見下方升級說明） |
+
+## 從 2.2.x 升級到 2.3.0
+
+API 簽章不變，但以下修正會改變回傳的資料或行為，升級前請確認：
+
+- **上櫃（OTC）歷史資料的單位**：`TradeVolume` 改為「股」、`TurnOverInValue` 改為「元」，與上市一致。
+  先前直接沿用櫃買的「仟股」/「仟元」，數值是現在的 1/1000；若你曾自行乘上 1000，請拿掉。
+- **`includeWarrant: false` 會一併排除牛熊證**：改依 ISIN 的 CFICode 判斷，先前會漏掉名稱以「牛」/「熊」結尾的牛熊證。
+- **歷史資料中格式不符的列會被略過**：先前會以今天日期、價格 0 填入，混進查詢結果。解析也不再受系統語系影響。
+- **沒有值的報價欄位回 `null`**：例如指數的 `LimitUp` / `LimitDown`，先前是 `0`。
+- **取消會拋出例外**：呼叫端取消時拋出 `OperationCanceledException`，先前回傳 `UPSTREAM_ERROR`。HttpClient 逾時改回 `TIMEOUT`。
+- **`IStockMarketService` 改為 Singleton**：價格訂閱不再隨 scope（例如每個 HTTP request）消失，且可多執行緒同時使用。
+  觀察者丟出的例外只會記錄，不再讓已取得的報價變成失敗。
+- **`AddTwStock()` 可重複呼叫**：呼叫前已註冊的 `ICacheService` 等相依會被保留，可用來替換預設實作。
+- **當月歷史資料只快取 30 分鐘**：今天收盤後新增的那一筆不會再被舊快取擋住一整天。
+- `StockHistory(List<string>)` 建構式標記為 `[Obsolete]`，將於 3.0 移除。
+- 相依的 AngleSharp 最低版本由 1.1.2 升到 1.5.0，修補 mXSS 弱點 [GHSA-pgww-w46g-26qg](https://github.com/advisories/GHSA-pgww-w46g-26qg)。
 
 ## 從 1.0.x 升級
 

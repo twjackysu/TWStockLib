@@ -110,6 +110,63 @@ public sealed class StockMarketService : IStockMarketService
         return WatchManyCoreAsync(targets, ValidateWatchInterval(interval), ct);
     }
 
+    // ── 不指定市場：依股票清單判斷 ──────────────────────────────────────────────
+
+    public Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(
+        string symbol, QuoteOptions? options = null, CancellationToken ct = default)
+    {
+        ValidateSymbol(symbol);
+
+        return WithResolvedMarketAsync(symbol, market => GetRealtimeQuoteAsync(symbol, market, options, ct), ct);
+    }
+
+    public Task<IReadOnlyDictionary<string, StockResult<StockQuote>>> GetRealtimeQuotesAsync(
+        IEnumerable<string> symbols, QuoteOptions? options = null, CancellationToken ct = default)
+        => GetResolvedQuotesAsync(ValidateSymbols(symbols), options ?? QuoteOptions.Default, ct);
+
+    public Task<StockResult<IReadOnlyList<StockHistory>>> GetHistoricalDataAsync(
+        string symbol, DateOnly from, DateOnly to, CancellationToken ct = default)
+    {
+        ValidateSymbol(symbol);
+        if (from > to)
+            throw new ArgumentException($"起日 {from:yyyy-MM-dd} 晚於迄日 {to:yyyy-MM-dd}。", nameof(from));
+
+        return WithResolvedMarketAsync(symbol, market => GetHistoricalDataAsync(symbol, market, from, to, ct), ct);
+    }
+
+    public IAsyncEnumerable<StockQuote> WatchAsync(string symbol, TimeSpan? interval = null, CancellationToken ct = default)
+    {
+        ValidateSymbol(symbol);
+
+        return WatchResolvedAsync(symbol, ValidateWatchInterval(interval), ct);
+    }
+
+    public IAsyncEnumerable<StockQuote> WatchAsync(
+        IEnumerable<string> symbols, TimeSpan? interval = null, CancellationToken ct = default)
+    {
+        var distinct = ValidateSymbols(symbols);
+        if (distinct.Count == 0)
+            throw new ArgumentException("至少要追蹤一檔股票。", nameof(symbols));
+
+        return WatchManyResolvedAsync(distinct, ValidateWatchInterval(interval), ct);
+    }
+
+    private async IAsyncEnumerable<StockQuote> WatchResolvedAsync(
+        string symbol, TimeSpan interval, [EnumeratorCancellation] CancellationToken ct)
+    {
+        var targets = await ResolveForWatchAsync([symbol], interval, ct);
+        await foreach (var quote in WatchCoreAsync(symbol, targets[0].Market, interval, ct))
+            yield return quote;
+    }
+
+    private async IAsyncEnumerable<StockQuote> WatchManyResolvedAsync(
+        IReadOnlyList<string> symbols, TimeSpan interval, [EnumeratorCancellation] CancellationToken ct)
+    {
+        var targets = await ResolveForWatchAsync(symbols, interval, ct);
+        await foreach (var quote in WatchManyCoreAsync(targets, interval, ct))
+            yield return quote;
+    }
+
     private async IAsyncEnumerable<StockQuote> WatchManyCoreAsync(
         IReadOnlyList<(string Symbol, MarketType Market)> targets, TimeSpan interval, [EnumeratorCancellation] CancellationToken ct)
     {
@@ -220,6 +277,112 @@ public sealed class StockMarketService : IStockMarketService
                 : StockResult<StockQuote>.Fail(StockErrorCodes.NotFound, $"查無資料：{symbol} 即時報價");
         }
         return results;
+    }
+
+    /// <summary>
+    /// 依各市場的股票清單（不含權證，與 <see cref="GetStockListAsync"/> 的預設共用快取）判斷每一檔的市場。
+    /// 依註冊順序逐一取得清單，全部找到就停，因此只查上市股票時不必下載上櫃清單。
+    /// 不在任何清單中的代號為 <c>NOT_FOUND</c>；但有清單取得失敗時，找不到的代號回傳該失敗——它可能就在那份清單裡。
+    /// </summary>
+    private async Task<Dictionary<string, StockResult<MarketType>>> ResolveMarketsAsync(
+        IReadOnlyList<string> symbols, CancellationToken ct)
+    {
+        var markets = new Dictionary<string, StockResult<MarketType>>(symbols.Count);
+        StockResult<MarketType>? listFailure = null;
+        foreach (var market in _sources.Keys)
+        {
+            var pending = symbols.Where(s => !markets.ContainsKey(s)).ToList();
+            if (pending.Count == 0)
+                break;
+
+            var list = await GetStockListAsync(market, includeWarrant: false, ct);
+            if (!list.IsSuccess)
+            {
+                listFailure ??= StockResult<MarketType>.Fail(list.ErrorCode, list.ErrorMessage, list.Exception);
+                continue;
+            }
+
+            foreach (var symbol in pending.Where(list.Value.ContainsKey))
+                markets[symbol] = StockResult<MarketType>.Ok(market);
+        }
+
+        foreach (var symbol in symbols.Where(s => !markets.ContainsKey(s)))
+        {
+            markets[symbol] = listFailure ?? StockResult<MarketType>.Fail(StockErrorCodes.NotFound,
+                $"查無資料：{symbol} 不在股票清單中（指數、權證請指定市場）");
+        }
+        return markets;
+    }
+
+    private async Task<StockResult<T>> WithResolvedMarketAsync<T>(
+        string symbol, Func<MarketType, Task<StockResult<T>>> query, CancellationToken ct)
+    {
+        var market = (await ResolveMarketsAsync([symbol], ct))[symbol];
+        return market.IsSuccess
+            ? await query(market.Value)
+            : StockResult<T>.Fail(market.ErrorCode, market.ErrorMessage, market.Exception);
+    }
+
+    private async Task<IReadOnlyDictionary<string, StockResult<StockQuote>>> GetResolvedQuotesAsync(
+        IReadOnlyList<string> symbols, QuoteOptions options, CancellationToken ct)
+    {
+        var markets = await ResolveMarketsAsync(symbols, ct);
+        var targets = symbols
+            .Where(s => markets[s].IsSuccess)
+            .Select(s => (s, markets[s].Value))
+            .ToList();
+        var quotes = await GetRealtimeQuotesCoreAsync(targets, options, ct);
+
+        var results = new Dictionary<string, StockResult<StockQuote>>(symbols.Count);
+        foreach (var symbol in symbols)
+        {
+            var market = markets[symbol];
+            results[symbol] = market.IsSuccess
+                ? quotes[symbol]
+                : StockResult<StockQuote>.Fail(market.ErrorCode, market.ErrorMessage, market.Exception);
+        }
+        return results.ToFrozenDictionary();
+    }
+
+    /// <summary>
+    /// 追蹤前先判斷每一檔的市場：股票清單暫時取得失敗就記錄後隔 <paramref name="interval"/> 重試；
+    /// 不在任何清單中的代號不會自己出現，拋出 <c>NOT_FOUND</c>。
+    /// </summary>
+    private async Task<IReadOnlyList<(string Symbol, MarketType Market)>> ResolveForWatchAsync(
+        IReadOnlyList<string> symbols, TimeSpan interval, CancellationToken ct)
+    {
+        while (true)
+        {
+            var markets = await ResolveMarketsAsync(symbols, ct);
+
+            var unknown = symbols.Where(s => markets[s].ErrorCode == StockErrorCodes.NotFound).ToList();
+            if (unknown.Count > 0)
+                throw new StockQueryException(StockErrorCodes.NotFound, $"查無資料：{string.Join(", ", unknown)} 不在股票清單中");
+
+            if (symbols.FirstOrDefault(s => !markets[s].IsSuccess) is not { } failed)
+                return symbols.Select(s => (s, markets[s].Value)).ToList();
+
+            _logger.LogWarning("判斷 {Symbol} 等代號的市場時取得股票清單失敗，{Interval} 後重試：{ErrorCode} {ErrorMessage}",
+                failed, interval, markets[failed].ErrorCode, markets[failed].ErrorMessage);
+            await Task.Delay(interval, _timeProvider, ct);
+        }
+    }
+
+    /// <summary>檢查每一檔的代號並去除重複，保留傳入的順序。</summary>
+    private static IReadOnlyList<string> ValidateSymbols(
+        IEnumerable<string> symbols, [CallerArgumentExpression(nameof(symbols))] string? paramName = null)
+    {
+        ArgumentNullException.ThrowIfNull(symbols, paramName);
+
+        var distinct = new List<string>();
+        var seen = new HashSet<string>();
+        foreach (var symbol in symbols)
+        {
+            ValidateSymbol(symbol, paramName);
+            if (seen.Add(symbol))
+                distinct.Add(symbol);
+        }
+        return distinct;
     }
 
     /// <summary>檢查每一檔的代號並去除重複；同一代號指定了不同市場是呼叫端的錯誤。</summary>

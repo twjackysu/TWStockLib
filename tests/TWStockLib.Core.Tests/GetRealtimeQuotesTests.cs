@@ -123,7 +123,7 @@ public class GetRealtimeQuotesTests
     {
         var tse = BatchSource(MarketType.TSE);
 
-        var results = await BuildService(tse).GetRealtimeQuotesAsync([]);
+        var results = await BuildService(tse).GetRealtimeQuotesAsync(Array.Empty<(string, MarketType)>());
 
         Assert.Empty(results);
         await tse.DidNotReceiveWithAnyArgs().FetchRealtimeQuotesAsync(default!, default!, default);
@@ -134,7 +134,7 @@ public class GetRealtimeQuotesTests
     {
         var service = BuildService(BatchSource(MarketType.TSE));
 
-        Assert.Throws<ArgumentNullException>(() => { _ = service.GetRealtimeQuotesAsync(null!); });
+        Assert.Throws<ArgumentNullException>(() => { _ = service.GetRealtimeQuotesAsync((IEnumerable<(string, MarketType)>)null!); });
         Assert.Throws<ArgumentException>(() => { _ = service.GetRealtimeQuotesAsync([("2330", MarketType.TSE), ("2330.tw|tse_2317", MarketType.TSE)]); });
         Assert.Throws<ArgumentException>(() => { _ = service.GetRealtimeQuotesAsync([("2330", MarketType.TSE), ("2330", MarketType.OTC)]); });
     }

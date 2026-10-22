@@ -83,4 +83,56 @@ public interface IStockMarketService
     /// </example>
     IAsyncEnumerable<StockQuote> WatchAsync(
         IEnumerable<(string Symbol, MarketType Market)> symbols, TimeSpan? interval = null, CancellationToken ct = default);
+
+    // ── 不指定市場 ───────────────────────────────────────────────────────────
+    // 以下多載依股票清單（GetStockListAsync，不含權證）判斷代號屬於上市或上櫃，再呼叫指定市場的版本。
+    // 第一次判斷需要下載股票清單（每個市場一頁數 MB 的 ISIN 網頁，可能要數十秒，且受每主機限流），
+    // 之後快取 TwStockOptions.StockListCacheDuration（預設 1 天）；依註冊順序找到就停，上市股票只需要上市清單。
+    // 不在清單中的代號（例如打錯、指數 t00、權證）回傳 NOT_FOUND，這類代號請改用指定市場的多載。
+
+    /// <summary>
+    /// 不指定市場取得即時報價：依股票清單判斷上市或上櫃。第一次呼叫需下載股票清單（數 MB、可能數十秒），之後快取 1 天；
+    /// 啟動時可先呼叫 <see cref="GetAllStockListAsync"/> 預熱。不在清單中的代號（含指數 t00、權證）回傳 <c>NOT_FOUND</c>；
+    /// 股票清單取得失敗時回傳該失敗。
+    /// </summary>
+    Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(
+        string symbol, QuoteOptions? options = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// 不指定市場一次取得多檔即時報價：依股票清單判斷每一檔的市場後，同
+    /// <see cref="GetRealtimeQuotesAsync(IEnumerable{ValueTuple{string, MarketType}}, QuoteOptions?, CancellationToken)"/>。
+    /// 不在清單中的代號為 <c>NOT_FOUND</c>。第一次呼叫的成本見
+    /// <see cref="GetRealtimeQuoteAsync(string, QuoteOptions?, CancellationToken)"/>。
+    /// </summary>
+    /// <exception cref="ArgumentException">代號格式不合法。</exception>
+    Task<IReadOnlyDictionary<string, StockResult<StockQuote>>> GetRealtimeQuotesAsync(
+        IEnumerable<string> symbols, QuoteOptions? options = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// 不指定市場取得歷史資料：依股票清單判斷上市或上櫃。第一次呼叫的成本見
+    /// <see cref="GetRealtimeQuoteAsync(string, QuoteOptions?, CancellationToken)"/>。
+    /// </summary>
+    Task<StockResult<IReadOnlyList<StockHistory>>> GetHistoricalDataAsync(
+        string symbol, DateOnly from, DateOnly to, CancellationToken ct = default);
+
+    /// <summary>
+    /// 不指定市場追蹤成交價：開始時依股票清單判斷上市或上櫃（清單暫時取得失敗會在下一輪重試，
+    /// 不在清單中拋出 <c>NOT_FOUND</c> 的 <see cref="StockQueryException"/>），之後同
+    /// <see cref="WatchAsync(string, MarketType, TimeSpan?, CancellationToken)"/>。
+    /// </summary>
+    IAsyncEnumerable<StockQuote> WatchAsync(string symbol, TimeSpan? interval = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// 不指定市場追蹤多檔成交價：開始時依股票清單判斷每一檔的市場（清單暫時取得失敗會在下一輪重試，
+    /// 任一檔不在清單中拋出 <c>NOT_FOUND</c> 的 <see cref="StockQueryException"/>），之後同
+    /// <see cref="WatchAsync(IEnumerable{ValueTuple{string, MarketType}}, TimeSpan?, CancellationToken)"/>。
+    /// </summary>
+    /// <example>
+    /// <code>
+    /// await foreach (var quote in stock.WatchAsync(["2330", "6510", "0050"], ct: stoppingToken))
+    ///     Console.WriteLine($"{quote.Symbol} {quote.Market} {quote.LastPrice}");
+    /// </code>
+    /// </example>
+    IAsyncEnumerable<StockQuote> WatchAsync(
+        IEnumerable<string> symbols, TimeSpan? interval = null, CancellationToken ct = default);
 }

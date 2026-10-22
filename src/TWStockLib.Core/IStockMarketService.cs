@@ -65,4 +65,22 @@ public interface IStockMarketService
     /// </example>
     IAsyncEnumerable<StockQuote> WatchAsync(
         string symbol, MarketType market, TimeSpan? interval = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// 同時追蹤多檔股票的成交價：每一輪以 <see cref="GetRealtimeQuotesAsync(IEnumerable{ValueTuple{string, MarketType}}, QuoteOptions?, CancellationToken)"/>
+    /// 略過快取一次查完所有代號（同一市場合併查詢，內建來源每 50 檔一個 MIS 請求），每一檔第一次查到時回傳一次，
+    /// 之後只回傳成交價有變動的那幾檔，同一輪內依傳入的順序。間隔同單檔多載（預設與最短皆為 5 秒）。
+    /// 上游暫時失敗會記錄後在下一輪重試；還沒查到過的代號回 <c>NOT_FOUND</c> 時拋出 <see cref="StockQueryException"/>
+    /// （多半是代號或市場打錯），已經查到過的代號之後查無資料只記錄、不中斷其他代號的追蹤；
+    /// 取消時拋出 <see cref="OperationCanceledException"/> 結束列舉。
+    /// </summary>
+    /// <exception cref="ArgumentException">沒有代號、代號格式不合法、同一代號指定兩個市場、不支援的市場，或間隔短於 5 秒。</exception>
+    /// <example>
+    /// <code>
+    /// await foreach (var quote in stock.WatchAsync([("2330", MarketType.TSE), ("6510", MarketType.OTC)], ct: stoppingToken))
+    ///     Console.WriteLine($"{quote.Symbol} {quote.LastPrice}");
+    /// </code>
+    /// </example>
+    IAsyncEnumerable<StockQuote> WatchAsync(
+        IEnumerable<(string Symbol, MarketType Market)> symbols, TimeSpan? interval = null, CancellationToken ct = default);
 }

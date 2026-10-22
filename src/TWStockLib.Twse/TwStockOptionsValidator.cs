@@ -15,6 +15,10 @@ internal sealed class TwStockOptionsValidator : IValidateOptions<TwStockOptions>
         RequirePositive(options.ClosedMonthHistoryCacheDuration, nameof(TwStockOptions.ClosedMonthHistoryCacheDuration));
         RequirePositive(options.CurrentMonthHistoryCacheDuration, nameof(TwStockOptions.CurrentMonthHistoryCacheDuration));
 
+        if (options.RateLimit.PermitLimit < 1)
+            failures.Add($"RateLimit.PermitLimit 必須至少為 1（目前為 {options.RateLimit.PermitLimit}）；不要限流請將 RateLimit.Enabled 設為 false。");
+        RequirePositive(options.RateLimit.Window, "RateLimit.Window");
+
         return failures.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
 
         void RequirePositive(TimeSpan value, string propertyName)

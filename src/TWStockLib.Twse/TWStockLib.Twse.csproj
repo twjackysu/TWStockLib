@@ -28,6 +28,8 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="[8.0.0,)" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="[8.0.0,)" />
     <PackageReference Include="System.Text.Encoding.CodePages" Version="[8.0.0,)" />
+    <!-- 不在 Microsoft.NETCore.App 共用架構內（只隨 ASP.NET Core 提供），需另外參考 -->
+    <PackageReference Include="System.Threading.RateLimiting" Version="[8.0.0,)" />
   </ItemGroup>
 
   <ItemGroup>

@@ -124,4 +124,25 @@ public class TwStockOptionsTests
         var ex = Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<IStockMarketService>());
         Assert.Contains(nameof(TwStockOptions.QuoteCacheDuration), ex.Message);
     }
+
+    [Fact]
+    public void RateLimitDefaults_AreThreeRequestsPerFiveSecondsPerHost()
+    {
+        var rateLimit = new TwStockOptions().RateLimit;
+
+        Assert.True(rateLimit.Enabled);
+        Assert.Equal(3, rateLimit.PermitLimit);
+        Assert.Equal(TimeSpan.FromSeconds(5), rateLimit.Window);
+    }
+
+    [Fact]
+    public void AddTwStock_AZeroPermitLimit_FailsWhenTheServiceIsResolved()
+    {
+        var services = new ServiceCollection().AddLogging();
+        services.AddTwStock(o => o.RateLimit.PermitLimit = 0);
+        using var provider = services.BuildServiceProvider();
+
+        var ex = Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<IStockMarketService>());
+        Assert.Contains("RateLimit.PermitLimit", ex.Message);
+    }
 }

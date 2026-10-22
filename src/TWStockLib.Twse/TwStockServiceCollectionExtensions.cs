@@ -26,6 +26,13 @@ public static class TwStockServiceCollectionExtensions
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<TwStockOptions>, TwStockOptionsValidator>());
 
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IConfigureOptions<HttpClientFactoryOptions>, TwStockHttpClientSetup>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IPostConfigureOptions<HttpClientFactoryOptions>, TwStockHttpClientSetup>());
+        // 限流狀態放在 Singleton：IHttpClientFactory 會定期換掉 handler，狀態若跟著 handler 走就會歸零
+        services.TryAddSingleton(sp =>
+        {
+            var rateLimit = sp.GetRequiredService<IOptions<TwStockOptions>>().Value.RateLimit;
+            return new PerHostRateLimiter(rateLimit.PermitLimit, rateLimit.Window, sp.GetRequiredService<TimeProvider>());
+        });
         services.TryAddSingleton<IStockHttpFetcher, TwseHttpFetcher>();
 
         // 每市場一個資料來源；新增市場只多註冊一行（OCP）

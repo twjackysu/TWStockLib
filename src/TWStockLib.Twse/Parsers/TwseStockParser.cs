@@ -31,7 +31,11 @@ internal static class TwseStockParser
             return null;
         }
 
+        // 查無此代號、或代號不屬於這個市場（例如以上櫃查 2330）時，上游仍回一筆代號為空的佔位資料
         var item = msgArray[0];
+        if (string.IsNullOrEmpty(GetString(item, "c")))
+            return null;
+
         return new StockQuote
         {
             Symbol = GetString(item, "c"),

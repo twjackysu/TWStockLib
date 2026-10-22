@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Logging;
 using TWStockLib.Cache;
 using TWStockLib.Models;
 using TWStockLib.Twse.Http;
@@ -7,18 +6,9 @@ using TWStockLib.Twse.Parsers;
 namespace TWStockLib.Twse.DataSources;
 
 /// <summary>上市（TSE，台灣證券交易所）資料來源。</summary>
-public sealed class TwseStockDataSource : TwseFamilyDataSourceBase
+internal sealed class TwseStockDataSource(IStockHttpFetcher fetcher, ICacheService cache, TimeProvider timeProvider)
+    : TwseFamilyDataSourceBase(fetcher, cache, timeProvider)
 {
-    public TwseStockDataSource(
-        IStockHttpFetcher fetcher, IStockParser parser, ICacheService cache,
-        ILogger<TwseStockDataSource> logger)
-        : base(fetcher, parser, cache, logger) { }
-
-    public TwseStockDataSource(
-        IStockHttpFetcher fetcher, IStockParser parser, ICacheService cache,
-        ILogger<TwseStockDataSource> logger, TimeProvider timeProvider)
-        : base(fetcher, parser, cache, logger, timeProvider) { }
-
     public override MarketType Market => MarketType.TSE;
     protected override string MarketKeyPrefix => "tse";
     protected override int IsinStrMode => 2;
@@ -29,6 +19,6 @@ public sealed class TwseStockDataSource : TwseFamilyDataSourceBase
         {
             var url = $"https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date={month:yyyyMM01}&stockNo={symbol}";
             var json = await Fetcher.GetStringAsync(url, ct);
-            return Parser.ParseTwseHistory(json);
+            return TwseStockParser.ParseTwseHistory(json);
         });
 }

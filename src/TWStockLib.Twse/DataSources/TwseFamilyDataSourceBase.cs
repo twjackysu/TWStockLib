@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Logging;
 using TWStockLib.Abstractions;
 using TWStockLib.Cache;
 using TWStockLib.Models;
@@ -11,7 +10,7 @@ namespace TWStockLib.Twse.DataSources;
 /// 證交所家族（TSE / OTC）資料來源的共用基底。報價與股票清單的取得流程相同，
 /// 只差市場代碼前綴 / ISIN strMode / 歷史端點，由子類別以抽象成員提供（Template Method）。
 /// </summary>
-public abstract class TwseFamilyDataSourceBase : IStockDataSource
+internal abstract class TwseFamilyDataSourceBase : IStockDataSource
 {
     private static readonly TimeSpan QuoteTtl = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan DailyTtl = TimeSpan.FromDays(1);
@@ -19,23 +18,13 @@ public abstract class TwseFamilyDataSourceBase : IStockDataSource
     private static readonly TimeSpan TaiwanUtcOffset = TimeSpan.FromHours(8);
 
     protected readonly IStockHttpFetcher Fetcher;
-    protected readonly IStockParser Parser;
     protected readonly ICacheService Cache;
-    protected readonly ILogger Logger;
     private readonly TimeProvider _timeProvider;
 
-    protected TwseFamilyDataSourceBase(
-        IStockHttpFetcher fetcher, IStockParser parser, ICacheService cache, ILogger logger)
-        : this(fetcher, parser, cache, logger, TimeProvider.System) { }
-
-    protected TwseFamilyDataSourceBase(
-        IStockHttpFetcher fetcher, IStockParser parser, ICacheService cache, ILogger logger,
-        TimeProvider timeProvider)
+    protected TwseFamilyDataSourceBase(IStockHttpFetcher fetcher, ICacheService cache, TimeProvider timeProvider)
     {
         Fetcher = fetcher;
-        Parser = parser;
         Cache = cache;
-        Logger = logger;
         _timeProvider = timeProvider;
     }
 
@@ -58,7 +47,7 @@ public abstract class TwseFamilyDataSourceBase : IStockDataSource
             var exCh = $"{MarketKeyPrefix}_{symbol}.tw";
             var url = $"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={exCh}&json=1&delay=0&_={DateTime.UtcNow.Ticks}";
             var json = await Fetcher.GetStringAsync(url, ct);
-            return Parser.ParseRealtimeQuote(json, Market);
+            return TwseStockParser.ParseRealtimeQuote(json, Market);
         }, QuoteTtl, bypassCache);
     }
 
@@ -88,7 +77,7 @@ public abstract class TwseFamilyDataSourceBase : IStockDataSource
         {
             var url = $"https://isin.twse.com.tw/isin/C_public.jsp?strMode={IsinStrMode}";
             var html = await Fetcher.GetBig5StringAsync(url, ct);
-            return Parser.ParseStockList(html, Market, includeWarrant);
+            return TwseStockParser.ParseStockList(html, Market, includeWarrant);
         }, DailyTtl);
     }
 

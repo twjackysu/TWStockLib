@@ -7,8 +7,10 @@ using TWStockLib.Models;
 
 namespace TWStockLib.Twse.Parsers;
 
-/// <inheritdoc cref="IStockParser" />
-public sealed class TwseStockParser : IStockParser
+/// <summary>
+/// 將證交所家族端點的原始回應字串轉成強型別模型。純函式、不碰 IO，可餵固定 fixture 單元測試。
+/// </summary>
+internal static class TwseStockParser
 {
     /// <summary>櫃買 st43 的成交量單位是「仟股」、成交金額是「仟元」；證交所 STOCK_DAY 是「股」、「元」。</summary>
     private const uint TpexUnitScale = 1000;
@@ -16,7 +18,7 @@ public sealed class TwseStockParser : IStockParser
     /// <summary>ISIN 表格欄位依序為：代號及名稱、ISIN、上市日、市場別、產業別、CFICode、備註。</summary>
     private const int IsinCfiCodeColumn = 5;
 
-    public StockQuote? ParseRealtimeQuote(string json, MarketType market)
+    public static StockQuote? ParseRealtimeQuote(string json, MarketType market)
     {
         using var doc = JsonDocument.Parse(json);
         if (!doc.RootElement.TryGetProperty("msgArray", out var msgArray)
@@ -49,7 +51,7 @@ public sealed class TwseStockParser : IStockParser
         };
     }
 
-    public IReadOnlyList<StockHistory> ParseTwseHistory(string json)
+    public static IReadOnlyList<StockHistory> ParseTwseHistory(string json)
     {
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
@@ -62,7 +64,7 @@ public sealed class TwseStockParser : IStockParser
         return MapRows(data, unitScale: 1);
     }
 
-    public IReadOnlyList<StockHistory> ParseTpexHistory(string json)
+    public static IReadOnlyList<StockHistory> ParseTpexHistory(string json)
     {
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
@@ -81,7 +83,7 @@ public sealed class TwseStockParser : IStockParser
         return MapRows(data, TpexUnitScale);
     }
 
-    public IReadOnlyDictionary<string, StockData> ParseStockList(string html, MarketType market, bool includeWarrant)
+    public static IReadOnlyDictionary<string, StockData> ParseStockList(string html, MarketType market, bool includeWarrant)
     {
         var parser = new HtmlParser();
         var doc = parser.ParseDocument(html);

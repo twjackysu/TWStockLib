@@ -1,6 +1,5 @@
 using System.Globalization;
 using Microsoft.Extensions.Caching.Memory;
-using Microsoft.Extensions.Logging.Abstractions;
 using TWStockLib.Cache;
 using TWStockLib.Twse.DataSources;
 using TWStockLib.Twse.Http;
@@ -27,8 +26,7 @@ public class TwseFamilyDataSourceTests
     }
 
     private static TwseStockDataSource Build(FakeFetcher fetcher) =>
-        new(fetcher, new TwseStockParser(), new MemoryCacheService(new MemoryCache(new MemoryCacheOptions())),
-            NullLogger<TwseStockDataSource>.Instance);
+        new(fetcher, new MemoryCacheService(new MemoryCache(new MemoryCacheOptions())), TimeProvider.System);
 
     [Fact]
     public async Task FetchRealtimeQuoteAsync_RepeatedCalls_HitTheUpstreamOnce()
@@ -138,8 +136,7 @@ public class TwseFamilyDataSourceTests
     {
         var cache = new RecordingCache();
         var source = new TwseStockDataSource(
-            new FakeFetcher("""{"stat":"OK","data":[]}"""), new TwseStockParser(), cache,
-            NullLogger<TwseStockDataSource>.Instance,
+            new FakeFetcher("""{"stat":"OK","data":[]}"""), cache,
             new FixedTimeProvider(DateTimeOffset.Parse(now, CultureInfo.InvariantCulture)));
 
         await source.FetchHistoricalDataAsync("2330", new DateTime(2025, 8, 1), new DateTime(2025, 10, 31));

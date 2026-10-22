@@ -16,6 +16,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="TWStockLib.Twse.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\TWStockLib.Core\TWStockLib.Core.csproj" />
   </ItemGroup>
 

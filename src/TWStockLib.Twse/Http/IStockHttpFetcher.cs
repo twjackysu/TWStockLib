@@ -1,7 +1,7 @@
 namespace TWStockLib.Twse.Http;
 
 /// <summary>封裝對證交所家族端點的 HTTP 取得，是唯一碰 <see cref="System.Net.Http.HttpClient"/> 的地方。</summary>
-public interface IStockHttpFetcher
+internal interface IStockHttpFetcher
 {
     /// <summary>以 UTF-8 取得回應字串。</summary>
     Task<string> GetStringAsync(string url, CancellationToken ct = default);

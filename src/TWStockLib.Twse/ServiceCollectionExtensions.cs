@@ -4,7 +4,6 @@ using TWStockLib.Abstractions;
 using TWStockLib.Cache;
 using TWStockLib.Twse.DataSources;
 using TWStockLib.Twse.Http;
-using TWStockLib.Twse.Parsers;
 
 namespace TWStockLib.Services;
 
@@ -22,7 +21,6 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<ICacheService, MemoryCacheService>();
 
         services.TryAddSingleton<IStockHttpFetcher, TwseHttpFetcher>();
-        services.TryAddSingleton<IStockParser, TwseStockParser>();
 
         // 每市場一個資料來源；新增市場只多註冊一行（OCP）
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IStockDataSource, TwseStockDataSource>());

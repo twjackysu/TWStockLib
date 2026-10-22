@@ -43,13 +43,31 @@ public interface IStockMarketService
     Task<StockResult<IReadOnlyList<StockHistory>>> GetHistoricalDataAsync(
         string symbol, MarketType market, DateOnly from, DateOnly to, CancellationToken ct = default);
 
-    /// <summary>取得指定市場的股票清單。</summary>
+    /// <summary>
+    /// 取得指定市場的股票清單，從預設的 <see cref="StockListSource.OpenApi"/> 取得。
+    /// 要改用最完整但較慢的 ISIN 頁面時，用 <see cref="StockListOptions"/> 的多載。
+    /// </summary>
     Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetStockListAsync(
         MarketType market, bool includeWarrant = false, CancellationToken ct = default);
 
-    /// <summary>取得上市 + 上櫃的完整股票清單。</summary>
+    /// <summary>
+    /// 以 <paramref name="options"/> 取得指定市場的股票清單，例如改用最完整但較慢的 ISIN 頁面：
+    /// <c>GetStockListAsync(MarketType.TSE, new StockListOptions { Source = StockListSource.Isin })</c>。
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> 為 <c>null</c>。</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><see cref="StockListOptions.Source"/> 不是定義的值。</exception>
+    Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetStockListAsync(
+        MarketType market, StockListOptions options, CancellationToken ct = default);
+
+    /// <summary>取得上市 + 上櫃的股票清單，從預設的 <see cref="StockListSource.OpenApi"/> 取得。</summary>
     Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetAllStockListAsync(
         bool includeWarrant = false, CancellationToken ct = default);
+
+    /// <summary>以 <paramref name="options"/> 取得上市 + 上櫃的股票清單。</summary>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> 為 <c>null</c>。</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><see cref="StockListOptions.Source"/> 不是定義的值。</exception>
+    Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetAllStockListAsync(
+        StockListOptions options, CancellationToken ct = default);
 
     /// <summary>
     /// 持續追蹤指定股票的成交價：先回傳一次目前的報價，之後每隔 <paramref name="interval"/>
@@ -85,14 +103,14 @@ public interface IStockMarketService
         IEnumerable<(string Symbol, MarketType Market)> symbols, TimeSpan? interval = null, CancellationToken ct = default);
 
     // ── 不指定市場 ───────────────────────────────────────────────────────────
-    // 以下多載依完整股票清單（GetStockListAsync 含權證；內建來源含不含權證共用同一份快取）判斷代號屬於上市或上櫃，再呼叫指定市場的版本。
-    // 第一次判斷需要下載股票清單（每個市場一頁 ISIN 網頁，上市約 9.7 MB，實測 12～78 秒，且受每主機限流），
-    // 之後快取 TwStockOptions.StockListCacheDuration（預設 1 天）；依註冊順序找到就停，上市股票只需要上市清單。
-    // 不在清單中的代號（例如打錯、指數 t00）回傳 NOT_FOUND，這類代號請改用指定市場的多載。
+    // 以下多載依預設上游（StockListSource.OpenApi）的股票清單判斷代號屬於上市或上櫃，再呼叫指定市場的版本：
+    // 先查不含權證的清單，找不到再查含權證的清單；每一輪依註冊順序找到就停，上市股票只需要上市清單。
+    // 清單與 GetStockListAsync 共用快取 TwStockOptions.StockListCacheDuration（預設 1 天）。
+    // 不在清單中的代號（例如打錯、指數 t00、停止交易中或當天才掛牌的證券）回傳 NOT_FOUND，這類代號請改用指定市場的多載。
 
     /// <summary>
-    /// 不指定市場取得即時報價：依股票清單判斷上市或上櫃。第一次呼叫需下載股票清單（上市約 9.7 MB，實測 12～78 秒），之後快取 1 天；
-    /// 啟動時可先呼叫 <see cref="GetAllStockListAsync"/> 預熱。不在清單中的代號（含指數 t00）回傳 <c>NOT_FOUND</c>；
+    /// 不指定市場取得即時報價：依股票清單判斷上市或上櫃。第一次呼叫需下載股票清單（OpenAPI，通常 1 秒內；
+    /// 權證要另外下載較大的權證清單），之後快取 1 天。不在清單中的代號（含指數 t00、停止交易中的證券）回傳 <c>NOT_FOUND</c>；
     /// 股票清單取得失敗時回傳該失敗。
     /// </summary>
     Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(

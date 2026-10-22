@@ -114,74 +114,215 @@ public class TwseFamilyDataSourceTests
 
     // ── 股票清單 ──────────────────────────────────────────────────────────────
 
-    private sealed class IsinFetcher(string html) : IStockHttpFetcher
+    /// <summary>依 URL 回應固定內容並記錄請求；沒有對應的 URL 時拋出例外。</summary>
+    private sealed class ListFetcher(params (string Url, string Response)[] responses) : IStockHttpFetcher
     {
         public List<string> Urls { get; } = [];
 
-        public Task<string> GetStringAsync(string url, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<string> GetStringAsync(string url, CancellationToken ct = default) => Respond(url);
 
-        public Task<string> GetBig5StringAsync(string url, CancellationToken ct = default)
+        public Task<string> GetBig5StringAsync(string url, CancellationToken ct = default) => Respond(url);
+
+        private Task<string> Respond(string url)
         {
             lock (Urls)
                 Urls.Add(url);
-            return Task.FromResult(html);
+            foreach (var (expected, response) in responses)
+            {
+                if (expected == url)
+                    return Task.FromResult(response);
+            }
+            throw new HttpRequestException($"未預期的請求：{url}");
         }
     }
 
+    private const string TseIsinUrl = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2";
+    private const string OtcIsinUrl = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4";
+    private const string TseStockDayAllUrl = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL";
+    private const string TseWarrantsUrl = "https://openapi.twse.com.tw/v1/opendata/t187ap37_L";
+    private const string TpexQuotesUrl = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes";
+    private const string TpexWarrantsUrl = "https://www.tpex.org.tw/openapi/v1/tpex_warrant_daily_quts";
+
+    private static readonly StockListOptions Isin = new() { Source = StockListSource.Isin };
+    private static readonly StockListOptions IsinWithWarrants = new() { Source = StockListSource.Isin, IncludeWarrant = true };
+
+    /// <summary>fixture 的「今天」：2026/10/22（台灣時間），03080T 今天是最後交易日、03001T 已到期。</summary>
+    private static readonly TimeProvider Oct22 =
+        new FixedTimeProvider(DateTimeOffset.Parse("2026-10-22T10:00:00+08:00", CultureInfo.InvariantCulture));
+
     private static ICacheService NewCache() => new MemoryCacheService(new MemoryCache(new MemoryCacheOptions()));
 
-    [Fact]
-    public async Task FetchStockListAsync_WithAndWithoutWarrants_ShareOneDownload()
-    {
-        var fetcher = new IsinFetcher(IsinFixtures.Tse);
-        var source = new TwseStockDataSource(fetcher, NewCache(), TimeProvider.System);
-
-        var withoutWarrants = await source.FetchStockListAsync(includeWarrant: false);
-        var all = await source.FetchStockListAsync(includeWarrant: true);
-
-        Assert.Equal(11, withoutWarrants.Count);
-        Assert.Equal(15, all.Count);
-        Assert.Equal(["https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"], fetcher.Urls);
-    }
+    private static ListFetcher TseOpenApi() => new(
+        (TseStockDayAllUrl, OpenApiFixtures.TwseStockDayAll), (TseWarrantsUrl, OpenApiFixtures.TwseWarrants));
 
     [Fact]
-    public async Task FetchStockListAsync_ByDefault_ExcludesWarrants_IncludingBullBearCertificates()
+    public async Task FetchStockListAsync_ByDefault_UsesOpenApi_WithoutDownloadingTheWarrants()
     {
-        var source = new TwseStockDataSource(new IsinFetcher(IsinFixtures.Tse), NewCache(), TimeProvider.System);
+        var fetcher = TseOpenApi();
+        var source = new TwseStockDataSource(fetcher, NewCache(), Oct22);
 
         var list = await source.FetchStockListAsync();
 
-        Assert.DoesNotContain(list.Values, s => s.SecurityType == SecurityType.Warrant);
-        Assert.DoesNotContain("03989C", list.Keys); // 牛證
-        Assert.DoesNotContain("03726B", list.Keys); // 熊證
-        Assert.Contains("0050", list.Keys);
+        Assert.Equal(["0050", "00631L", "01001T", "020000", "1101", "2330", "2887Z1", "910322"], list.Keys.Order());
+        Assert.Equal(new StockData { Symbol = "2330", Name = "台積電", Market = MarketType.TSE }, list["2330"]);
+        Assert.Equal([TseStockDayAllUrl], fetcher.Urls);
         Assert.True(((ICollection<KeyValuePair<string, StockData>>)list).IsReadOnly);
     }
 
     [Fact]
-    public async Task FetchStockListAsync_WithoutWarrants_IsFilteredOncePerDownload()
+    public async Task FetchStockListAsync_OpenApiWithWarrants_AddsOnlyTheWarrantsStillTrading()
     {
-        var source = new TwseStockDataSource(new IsinFetcher(IsinFixtures.Tse), NewCache(), TimeProvider.System);
+        var fetcher = TseOpenApi();
+        var source = new TwseStockDataSource(fetcher, NewCache(), Oct22);
 
-        var first = await source.FetchStockListAsync();
-        var second = await source.FetchStockListAsync();
+        var all = await source.FetchStockListAsync(includeWarrant: true);
 
-        Assert.Same(first, second);
+        Assert.Equal(12, all.Count);
+        Assert.All(["030001", "03004T", "03726B", "03080T"], symbol => Assert.Contains(symbol, all.Keys));
+        Assert.DoesNotContain("03001T", all.Keys); // 10/14 已到期
+        Assert.Equal("台積電富邦64熊01", all["03726B"].Name);
+        Assert.Equal([TseStockDayAllUrl, TseWarrantsUrl], fetcher.Urls);
     }
 
     [Fact]
-    public async Task FetchStockListAsync_Otc_UsesItsOwnPageAndCacheEntry()
+    public async Task FetchStockListAsync_OpenApiWithWarrants_IsMergedOncePerDownload()
     {
-        var cache = NewCache();
-        var tseFetcher = new IsinFetcher(IsinFixtures.Tse);
-        var otcFetcher = new IsinFetcher(IsinFixtures.Otc);
-        await new TwseStockDataSource(tseFetcher, cache, TimeProvider.System).FetchStockListAsync();
+        var fetcher = TseOpenApi();
+        var source = new TwseStockDataSource(fetcher, NewCache(), Oct22);
 
-        var otc = await new TpexStockDataSource(otcFetcher, cache, TimeProvider.System).FetchStockListAsync(includeWarrant: true);
+        var first = await source.FetchStockListAsync(includeWarrant: true);
+        var withoutWarrants = await source.FetchStockListAsync();
+        var second = await source.FetchStockListAsync(includeWarrant: true);
 
-        Assert.Equal(["https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"], otcFetcher.Urls);
+        Assert.Same(first, second);
+        Assert.Equal(8, withoutWarrants.Count);
+        Assert.Equal([TseStockDayAllUrl, TseWarrantsUrl], fetcher.Urls);
+    }
+
+    [Fact]
+    public async Task FetchStockListAsync_TheWarrantCutoff_IsTheTaiwanDate()
+    {
+        // UTC 還是 10/22，台灣已經是 10/23：今天最後交易的 03080T 不再列出
+        var source = new TwseStockDataSource(TseOpenApi(), NewCache(),
+            new FixedTimeProvider(DateTimeOffset.Parse("2026-10-22T16:30:00+00:00", CultureInfo.InvariantCulture)));
+
+        var all = await source.FetchStockListAsync(includeWarrant: true);
+
+        Assert.DoesNotContain("03080T", all.Keys);
+        Assert.Contains("030001", all.Keys);
+    }
+
+    [Fact]
+    public async Task FetchStockListAsync_OtcOpenApi_DownloadsTheWarrantsOnlyWhenAsked()
+    {
+        var fetcher = new ListFetcher((TpexQuotesUrl, OpenApiFixtures.TpexQuotes), (TpexWarrantsUrl, OpenApiFixtures.TpexWarrants));
+        var source = new TpexStockDataSource(fetcher, NewCache(), Oct22);
+
+        var withoutWarrants = await source.FetchStockListAsync();
+        Assert.Equal([TpexQuotesUrl], fetcher.Urls);
+        var all = await source.FetchStockListAsync(includeWarrant: true);
+
+        Assert.Equal(["00679B", "020001", "6510", "8349A"], withoutWarrants.Keys.Order());
+        Assert.Equal(["00679B", "020001", "6510", "700019", "72479U", "8349A"], all.Keys.Order());
+        Assert.All(all.Values, s => Assert.Equal(MarketType.OTC, s.Market));
+        Assert.Equal([TpexQuotesUrl, TpexWarrantsUrl], fetcher.Urls);
+    }
+
+    [Fact]
+    public async Task FetchStockListAsync_Isin_WithAndWithoutWarrants_ShareOneDownload()
+    {
+        var fetcher = new ListFetcher((TseIsinUrl, IsinFixtures.Tse));
+        var source = new TwseStockDataSource(fetcher, NewCache(), Oct22);
+
+        var withoutWarrants = await source.FetchStockListAsync(Isin);
+        var all = await source.FetchStockListAsync(IsinWithWarrants);
+
+        Assert.Equal(11, withoutWarrants.Count);
+        Assert.Equal(15, all.Count);
+        Assert.Equal([TseIsinUrl], fetcher.Urls);
+    }
+
+    [Fact]
+    public async Task FetchStockListAsync_IsinWithoutWarrants_ExcludesBullBearCertificates_AndIsFilteredOnce()
+    {
+        var source = new TwseStockDataSource(new ListFetcher((TseIsinUrl, IsinFixtures.Tse)), NewCache(), Oct22);
+
+        var list = await source.FetchStockListAsync(Isin);
+
+        Assert.DoesNotContain("030001", list.Keys); // 認購
+        Assert.DoesNotContain("03004T", list.Keys); // 認售
+        Assert.DoesNotContain("03989C", list.Keys); // 牛證
+        Assert.DoesNotContain("03726B", list.Keys); // 熊證
+        Assert.Contains("0050", list.Keys);
+        Assert.Same(list, await source.FetchStockListAsync(Isin));
+    }
+
+    [Fact]
+    public async Task FetchStockListAsync_IsinOtc_UsesItsOwnPage()
+    {
+        var fetcher = new ListFetcher((OtcIsinUrl, IsinFixtures.Otc));
+
+        var otc = await new TpexStockDataSource(fetcher, NewCache(), Oct22).FetchStockListAsync(IsinWithWarrants);
+
+        Assert.Equal([OtcIsinUrl], fetcher.Urls);
         Assert.Equal(7, otc.Count);
         Assert.All(otc.Values, s => Assert.Equal(MarketType.OTC, s.Market));
+    }
+
+    [Fact]
+    public async Task FetchStockListAsync_EachUpstream_HasItsOwnCacheEntry()
+    {
+        var fetcher = new ListFetcher((TseIsinUrl, IsinFixtures.Tse), (TseStockDayAllUrl, OpenApiFixtures.TwseStockDayAll));
+        var source = new TwseStockDataSource(fetcher, NewCache(), Oct22);
+
+        var fromIsin = await source.FetchStockListAsync(Isin);
+        var fromOpenApi = await source.FetchStockListAsync();
+
+        Assert.Equal(11, fromIsin.Count);
+        Assert.Equal(8, fromOpenApi.Count);
+        Assert.Equal([TseIsinUrl, TseStockDayAllUrl], fetcher.Urls);
+    }
+
+    [Fact]
+    public async Task FetchStockListAsync_AnUndefinedSource_Throws()
+    {
+        var source = new TwseStockDataSource(TseOpenApi(), NewCache(), Oct22);
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => source.FetchStockListAsync(new StockListOptions { Source = (StockListSource)42 }));
+    }
+
+    [Theory]
+    [InlineData("030001", true)]   // 認購
+    [InlineData("03004T", true)]   // 認售
+    [InlineData("03989C", true)]   // 牛證
+    [InlineData("03726B", true)]   // 熊證
+    [InlineData("085555", true)]
+    [InlineData("2330", false)]
+    [InlineData("0050", false)]
+    [InlineData("00631L", false)]  // ETF：00 開頭
+    [InlineData("01001T", false)]  // REIT
+    [InlineData("020000", false)]  // ETN
+    [InlineData("2887Z1", false)]  // 特別股
+    [InlineData("910322", false)]  // TDR
+    [InlineData("090001", false)]
+    public void IsWarrantSymbol_Tse(string symbol, bool expected)
+    {
+        Assert.Equal(expected, new TwseStockDataSource(new ListFetcher(), NewCache(), TimeProvider.System).IsWarrantSymbol(symbol));
+    }
+
+    [Theory]
+    [InlineData("700019", true)]
+    [InlineData("72479U", true)]
+    [InlineData("6510", false)]
+    [InlineData("8349A", false)]
+    [InlineData("00679B", false)]
+    [InlineData("020001", false)]
+    [InlineData("01111S", false)]  // 資產基礎證券
+    [InlineData("030001", false)]  // 上市權證的區段不屬於上櫃
+    public void IsWarrantSymbol_Otc(string symbol, bool expected)
+    {
+        Assert.Equal(expected, new TpexStockDataSource(new ListFetcher(), NewCache(), TimeProvider.System).IsWarrantSymbol(symbol));
     }
 
     // ── 同時發生的未命中只向上游查詢一次 ──────────────────────────────────────
@@ -212,13 +353,13 @@ public class TwseFamilyDataSourceTests
     }
 
     [Fact]
-    public async Task FetchStockListAsync_TenParallelFirstCalls_DownloadThePageOnce()
+    public async Task FetchStockListAsync_TenParallelFirstCalls_DownloadTheListOnce()
     {
-        var fetcher = new SlowFetcher(IsinFixtures.Tse);
-        var source = new TwseStockDataSource(fetcher, NewCache(), TimeProvider.System);
+        var fetcher = new SlowFetcher("", OpenApiFixtures.TpexQuotes);
+        var source = new TpexStockDataSource(fetcher, NewCache(), TimeProvider.System);
 
         var callers = Enumerable.Range(0, 10)
-            .Select(i => Task.Run(() => source.FetchStockListAsync(includeWarrant: i % 2 == 0)))
+            .Select(_ => Task.Run(() => source.FetchStockListAsync()))
             .ToArray();
         while (fetcher.Requests == 0)
             await Task.Delay(10);
@@ -227,8 +368,8 @@ public class TwseFamilyDataSourceTests
         var lists = await Task.WhenAll(callers);
 
         Assert.Equal(1, fetcher.Requests);
-        Assert.All(lists.Where((_, i) => i % 2 == 0), l => Assert.Equal(15, l.Count));
-        Assert.All(lists.Where((_, i) => i % 2 == 1), l => Assert.Equal(11, l.Count));
+        Assert.All(lists, l => Assert.Same(lists[0], l));
+        Assert.Equal(4, lists[0].Count);
     }
 
     [Fact]
@@ -238,8 +379,8 @@ public class TwseFamilyDataSourceTests
         var source = new TwseStockDataSource(fetcher, NewCache(), TimeProvider.System);
         using var impatient = new CancellationTokenSource();
 
-        var first = source.FetchStockListAsync(ct: impatient.Token);
-        var second = source.FetchStockListAsync();
+        var first = source.FetchStockListAsync(Isin, impatient.Token);
+        var second = source.FetchStockListAsync(Isin);
         impatient.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
         fetcher.Release();

@@ -27,9 +27,12 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
     private readonly TimeProvider _timeProvider;
     private readonly TwStockOptions _options;
 
-    // 「不含權證」的檢視依完整清單的實例記住：同一份快取只過濾一次，快取換新後舊檢視跟著被回收
+    // 「不含權證」的檢視依含權證清單的實例記住：同一份快取只過濾一次，快取換新後舊檢視跟著被回收
     private readonly ConditionalWeakTable<IReadOnlyDictionary<string, StockData>, IReadOnlyDictionary<string, StockData>>
         _withoutWarrants = new();
+
+    // OpenAPI 上次合併的含權證清單；兩份快取都還是同一個實例時直接沿用，多執行緒同時換新頂多重算一次
+    private MergedStockList? _withWarrants;
 
     // options 未指定（直接 new 的測試）時使用 TwStockOptions 的預設快取時間
     protected TwseFamilyDataSourceBase(
@@ -48,6 +51,12 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
 
     /// <summary>ISIN 股票清單頁的 strMode：上市 2、上櫃 4。</summary>
     protected abstract int IsinStrMode { get; }
+
+    /// <summary>
+    /// 依代號判斷是否為權證（含牛熊證）。權證代號有固定的編碼區段，2026/10/22 以兩個市場 ISIN 頁面的 CFICode
+    /// （「RW」開頭即權證）核對 53,863 檔，結果完全一致；以代號判斷時，沒有 CFICode 的來源也能用同一套規則。
+    /// </summary>
+    protected internal abstract bool IsWarrantSymbol(string symbol);
 
     public Task<StockQuote?> FetchRealtimeQuoteAsync(string symbol, QuoteOptions options, CancellationToken ct = default)
     {
@@ -133,27 +142,92 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
         return result.AsReadOnly();
     }
 
+    public Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(
+        bool includeWarrant = false, CancellationToken ct = default)
+        => FetchStockListAsync(new StockListOptions { IncludeWarrant = includeWarrant }, ct);
+
     /// <summary>
-    /// ISIN 頁面有數 MB，每個市場只下載、解析一次並快取完整清單（含權證）；
-    /// 是否排除權證在讀取時從同一份清單過濾，兩種查詢共用一次下載，同時發生的未命中也只下載一次。
+    /// 每個上游的清單各自快取（鍵 <c>stock_list_{上游}_{Market}</c>），同時發生的未命中只下載一次。
+    /// 含權證的清單只下載一次，不含權證的版本在讀取時依代號過濾。
     /// </summary>
     public async Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(
-        bool includeWarrant = false, CancellationToken ct = default)
+        StockListOptions options, CancellationToken ct = default)
     {
-        var cacheKey = $"stock_list_{Market}";
-        var all = await Cache.GetOrSetAsync(cacheKey, async token =>
+        switch (options.Source)
         {
-            var url = $"https://isin.twse.com.tw/isin/C_public.jsp?strMode={IsinStrMode}";
-            var html = await Fetcher.GetBig5StringAsync(url, token);
-            return TwseStockParser.ParseStockList(html, Market);
-        }, _options.StockListCacheDuration, ct);
-
-        return includeWarrant
-            ? all
-            : _withoutWarrants.GetValue(all, static list => list
-                .Where(p => p.Value.SecurityType != SecurityType.Warrant)
-                .ToFrozenDictionary());
+            case StockListSource.OpenApi:
+                return await FetchOpenApiStockListAsync(options.IncludeWarrant, ct);
+            case StockListSource.Isin:
+                // ISIN 頁面有數 MB，含權證，只下載、解析一次
+                var all = await CachedStockList($"stock_list_isin_{Market}", async token =>
+                {
+                    var url = $"https://isin.twse.com.tw/isin/C_public.jsp?strMode={IsinStrMode}";
+                    var html = await Fetcher.GetBig5StringAsync(url, token);
+                    return TwseStockParser.ParseStockList(html, Market);
+                }, ct);
+                return options.IncludeWarrant ? all : WithoutWarrants(all);
+            default:
+                throw new ArgumentOutOfRangeException(nameof(options), options.Source, $"不支援的清單來源：{options.Source}");
+        }
     }
+
+    /// <summary>OpenAPI 上此市場權證以外的證券清單（不含權證）。</summary>
+    protected abstract string OpenApiStockListUrl { get; }
+
+    /// <summary>OpenAPI 上此市場的權證清單。</summary>
+    protected abstract string OpenApiWarrantListUrl { get; }
+
+    protected abstract IReadOnlyDictionary<string, StockData> ParseOpenApiStockList(string json);
+
+    protected abstract IReadOnlyDictionary<string, StockData> ParseOpenApiWarrantList(string json);
+
+    /// <summary>
+    /// OpenAPI 的權證與其他證券分屬不同端點，權證清單大得多（上市解壓後約 45 MB、上櫃約 3.8 MB），只在需要時下載。
+    /// 兩份分開快取、各自只下載一次，合併結果依兩份快取的實例記住。
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, StockData>> FetchOpenApiStockListAsync(
+        bool includeWarrant, CancellationToken ct)
+    {
+        var listed = await CachedStockList($"stock_list_openapi_{Market}",
+            async token => ParseOpenApiStockList(await Fetcher.GetStringAsync(OpenApiStockListUrl, token)), ct);
+        if (!includeWarrant)
+            return listed;
+
+        var warrants = await CachedStockList($"stock_list_openapi_{Market}_warrants",
+            async token => ParseOpenApiWarrantList(await Fetcher.GetStringAsync(OpenApiWarrantListUrl, token)), ct);
+
+        var merged = _withWarrants;
+        if (merged is null || !ReferenceEquals(merged.Listed, listed) || !ReferenceEquals(merged.Warrants, warrants))
+            _withWarrants = merged = new MergedStockList(listed, warrants);
+        return merged.All;
+    }
+
+    /// <summary>OpenAPI 的兩份清單合併後的結果，連同合併時用的兩份快取實例。</summary>
+    private sealed class MergedStockList(
+        IReadOnlyDictionary<string, StockData> listed, IReadOnlyDictionary<string, StockData> warrants)
+    {
+        public IReadOnlyDictionary<string, StockData> Listed { get; } = listed;
+        public IReadOnlyDictionary<string, StockData> Warrants { get; } = warrants;
+        public IReadOnlyDictionary<string, StockData> All { get; } = listed.Concat(warrants)
+            .DistinctBy(p => p.Key)
+            .ToFrozenDictionary();
+    }
+
+    /// <summary>以股票清單的快取時間快取；<paramref name="fetch"/> 收到的是合併並行查詢後共用的 token。</summary>
+    private Task<IReadOnlyDictionary<string, StockData>> CachedStockList(
+        string cacheKey, Func<CancellationToken, Task<IReadOnlyDictionary<string, StockData>>> fetch, CancellationToken ct)
+        => Cache.GetOrSetAsync(cacheKey, fetch, _options.StockListCacheDuration, ct);
+
+    /// <summary>過濾掉權證；同一份清單只過濾一次。</summary>
+    private IReadOnlyDictionary<string, StockData> WithoutWarrants(IReadOnlyDictionary<string, StockData> list)
+        => _withoutWarrants.GetValue(list, all => all
+            .Where(p => !IsWarrantSymbol(p.Key))
+            .ToFrozenDictionary());
+
+    /// <summary>台灣時間的今天。</summary>
+    protected DateOnly TaiwanToday => DateOnly.FromDateTime(TaiwanNow.DateTime);
+
+    private DateTimeOffset TaiwanNow => _timeProvider.GetUtcNow().ToOffset(TaiwanUtcOffset);
 
     /// <summary>取得單一月份的歷史資料（含快取），由子類別決定端點與解析方式。</summary>
     protected abstract Task<IReadOnlyList<StockHistory>> FetchMonthAsync(
@@ -176,7 +250,7 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
     /// </summary>
     private TimeSpan HistoryTtl(DateOnly month)
     {
-        var taiwanNow = _timeProvider.GetUtcNow().ToOffset(TaiwanUtcOffset);
+        var taiwanNow = TaiwanNow;
         var currentMonth = new DateOnly(taiwanNow.Year, taiwanNow.Month, 1);
         return new DateOnly(month.Year, month.Month, 1) < currentMonth
             ? _options.ClosedMonthHistoryCacheDuration

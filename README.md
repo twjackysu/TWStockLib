@@ -30,7 +30,7 @@ dotnet add package TWStockLib.Core
 
 ## 功能特點
 
-- 獲取上市（TSE）與上櫃（OTC）股票清單，含證券類型、產業別、ISIN 與上市日；可依證券類型過濾，預設排除權證與牛熊證
+- 獲取上市（TSE）與上櫃（OTC）股票清單，預設從 OpenAPI 取得（通常 1 秒內），預設排除權證與牛熊證
 - 獲取股票歷史日成交資料（跨月自動合併，上市與上櫃單位一致）
 - 獲取股票即時報價（含最佳五檔），可一次查多檔（同一市場每 50 檔只需一個請求）
 - 以 `await foreach` 追蹤一檔或多檔的成交價變動
@@ -102,45 +102,26 @@ if (all.IsSuccess)
 var tse = await stock.GetStockListAsync(MarketType.TSE);
 var otcWithWarrants = await stock.GetStockListAsync(MarketType.OTC, includeWarrant: true);
 
-// 依證券類型過濾：上市的普通股與 ETF、全市場的 ETF
-var stocksAndEtfs = await stock.GetStockListAsync(MarketType.TSE, [SecurityType.CommonStock, SecurityType.Etf]);
-var etfs = await stock.GetAllStockListAsync([SecurityType.Etf]);
-
-if (tse.IsSuccess)
-{
-    var tsmc = tse.Value["2330"];
-    Console.WriteLine($"{tsmc.Name} {tsmc.SecurityType} {tsmc.Industry} {tsmc.Isin} {tsmc.ListedDate}");
-    // 台積電 CommonStock 半導體業 TW0002330008 1994/9/5
-}
+// 需要最完整的清單（含停止交易中、即將掛牌的證券）時改用 ISIN 頁面，比較慢
+var complete = await stock.GetAllStockListAsync(new StockListOptions { Source = StockListSource.Isin });
 ```
 
-預設排除權證；是否為權證依 ISIN 的 CFICode 判斷，認購、認售與牛熊證都算在內。
-上市清單約 4 萬筆，其中九成以上是權證（2026/10/22：40,476 筆中 39,088 筆）。
+每一檔有代號（`Symbol`）、名稱（`Name`）與市場別（`Market`）。預設排除權證，認購、認售與牛熊證都算在內；
+是否為權證依代號判斷（上市 6 碼且 03～08 開頭、上櫃 6 碼且 7 開頭，2026/10/22 以 ISIN 的 CFICode 核對 53,863 檔完全一致）。
 
-每一檔除了 `Symbol`、`Name`、`Market`，還有 ISIN 頁面上的資料：
+清單有兩種上游，以 `StockListOptions.Source` 選擇，沒指定時用 `OpenApi`：
 
-| 屬性 | 說明 |
-|------|------|
-| `SecurityType` | 證券類型，依 CFICode 判斷（見下表）；自訂資料來源沒有提供時為 `Unknown` |
-| `Industry` | 產業別，例如「半導體業」；ETF、權證等沒有產業別的證券為 `null` |
-| `Isin` | 國際證券辨識號碼，例如 `TW0002330008`；KY 股為發行地的 ISIN |
-| `ListedDate` | 上市（櫃）日，`DateOnly?` |
-| `CfiCode` | 原始的 CFI 代碼（ISO 10962），需要更細的分類（例如認購 / 認售權證）時使用 |
+| | `StockListSource.OpenApi`（預設） | `StockListSource.Isin` |
+|---|---|---|
+| 上游 | 證交所與櫃買 OpenAPI（JSON） | ISIN 證券編碼頁（Big5 網頁） |
+| 速度（2026/10 實測） | 上市 0.2 秒、上櫃 0.1 秒；含權證約 1 秒 | 上市 5～78 秒、上櫃 2～24 秒，每個市場一頁數 MB |
+| 涵蓋範圍 | 有行情資料的證券：權證以外 2,400 檔 | 最完整：權證以外 2,412 檔 |
+| 少了什麼 | 停止交易中的證券、尚未掛牌的證券、資產基礎證券；上市清單收盤後才更新，新掛牌晚一個交易日出現；權證只列到最後交易日 | — |
 
-| `SecurityType` | CFICode | 例子 |
-|----------------|---------|------|
-| `CommonStock` | `ES…` | 2330 台積電、3673 TPK-KY、創新板的 2237 華德動能-創 |
-| `PreferredStock` | `EP…`、`EF…` | 2887Z1 台新新光己特、2897B 王道銀乙特 |
-| `DepositaryReceipt` | `ED…` | 910322 康師傅-DR（臺灣存託憑證） |
-| `Etf` | `CE…` | 0050 元大台灣50、00679B 元大美債20年 |
-| `Etn` | `CM…` | 020000 富邦特選蘋果N |
-| `BeneficiarySecurity` | `CB…`、`DA…` | 01001T 土銀富邦R1（REIT）、01111S 081中租賃A（資產基礎證券） |
-| `Warrant` | `RW…` | 認購、認售與牛熊證 |
-| `Bond` | 其他 `D…` | 目前兩個清單頁都沒有 |
-| `Other` | 其他代碼 | 目前兩個清單頁都沒有 |
+2026/10/22 的差異是 12 檔：停止交易中的 1516 川飛、1589 永冠-KY、6142 友勁、4804 大略-KY、8047 星雲、00838B，
+10/29 才掛牌的 009831、009832，以及 4 檔資產基礎證券（01111S～01114S）。只用來查代號名稱、判斷市場的話，預設就夠了。
 
-清單頁有數 MB（上市約 9.6 MB），每個市場只下載、解析一次並快取（預設 1 天）；
-含不含權證、依類型過濾都從同一份清單取得，同時發生的多個查詢也只下載一次。
+每個上游的清單各自快取（預設 1 天），權證清單只在要求含權證時才下載；同時發生的多個查詢也只下載一次。
 
 #### 歷史資料
 
@@ -206,7 +187,7 @@ foreach (var symbol in watchlist)
 
 #### 不指定市場
 
-不確定代號是上市還是上櫃時，可省略 `MarketType`，函式庫會依股票清單（`GetStockListAsync`，含權證）判斷：
+不確定代號是上市還是上櫃時，可省略 `MarketType`，函式庫會依股票清單（預設的 OpenAPI 上游）判斷：
 
 ```csharp
 var quote = await stock.GetRealtimeQuoteAsync("6510");                    // 上櫃
@@ -215,11 +196,11 @@ var history = await stock.GetHistoricalDataAsync("2330", new DateOnly(2025, 9, 1
 await foreach (var q in stock.WatchAsync(["2330", "6510"], ct: stoppingToken)) { /* … */ }
 ```
 
-- **第一次呼叫要下載股票清單**：每個市場一頁 ISIN 網頁，上市約 9.7 MB、上櫃約 3.2 MB，上游傳得慢，
-  實測（2026-10）上市 12～78 秒、上櫃 16～24 秒；之後快取 `StockListCacheDuration`（預設 1 天）。
-  依上市、上櫃的順序找到就停，只查上市股票時不會下載上櫃清單。
-  不想讓第一個使用者等，可在啟動時先呼叫一次 `GetAllStockListAsync()` 預熱；若自行加了重試，逾時請參考[HttpClient 與重試](#httpclient-與重試)放寬。
-- 不在清單中的代號回傳 `NOT_FOUND`，包括打錯的代號與指數（`t00`）；指數請改用指定市場的多載。
+- **第一次呼叫要下載股票清單**（OpenAPI，通常 1 秒內），之後快取 `StockListCacheDuration`（預設 1 天）。
+  先查不含權證的清單、依上市、上櫃的順序找到就停，只查上市股票時不會下載上櫃清單；
+  找不到的代號才再查含權證的清單（上市權證清單壓縮後約 1.8 MB）。
+- 不在清單中的代號回傳 `NOT_FOUND`，包括打錯的代號、指數（`t00`），以及 OpenAPI 清單沒有的證券
+  （停止交易中、當天才掛牌，見[股票清單](#股票清單)）；這些請改用指定市場的多載。
 - 股票清單取得失敗時回傳該失敗（例如 `UPSTREAM_ERROR`），不會誤報成 `NOT_FOUND`；追蹤時則在下一輪重試。
 
 #### 追蹤成交價
@@ -278,8 +259,8 @@ services.AddTwStock(options =>
 ### 限流
 
 證交所會暫時封鎖短時間內送出大量請求的 IP。官方沒有公告數字，社群經驗是**每 5 秒超過 3 個請求**就可能被擋，
-因此內建限流預設採用這個頻率，並對每個上游主機（`www.twse.com.tw`、`mis.twse.com.tw`、`www.tpex.org.tw`、
-`isin.twse.com.tw`）分開計算：任何 5 秒內最多送出 3 個請求，超過的請求排隊等候，不會失敗。
+因此內建限流預設採用這個頻率，並對每個上游主機（`www.twse.com.tw`、`mis.twse.com.tw`、`openapi.twse.com.tw`、
+`www.tpex.org.tw`、`isin.twse.com.tw`）分開計算：任何 5 秒內最多送出 3 個請求，超過的請求排隊等候，不會失敗。
 
 - 歷史資料一個月一個請求：查一整年（12 個月）約需 15 秒。查歷史不會拖慢即時報價，兩者是不同主機。
 - 逐檔查報價、或每檔各開一個 `WatchAsync` 時，超過 3 檔就會排隊（例如 6 檔約每 10 秒一次）。
@@ -299,8 +280,8 @@ services.AddTwStock();
 services.AddHttpClient(TwStockOptions.HttpClientName)
     .AddStandardResilienceHandler(o =>
     {
-        // 股票清單頁有數 MB、上游傳得慢（實測 3.2 MB 約 24 秒），排隊等限流的時間也算在內，
-        // 標準預設（單次 10 秒、總計 30 秒）太短
+        // 改用 ISIN 清單（StockListSource.Isin）時，清單頁有數 MB、上游傳得慢（實測上市可達 78 秒），
+        // 排隊等限流的時間也算在內，標準預設（單次 10 秒、總計 30 秒）太短
         o.AttemptTimeout.Timeout = TimeSpan.FromSeconds(60);
         o.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(180);
         o.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(120);   // 須至少為單次逾時的兩倍
@@ -327,7 +308,8 @@ services.AddHttpClient(TwStockOptions.HttpClientName)
   ```
 
   批次報價用的 `FetchRealtimeQuotesAsync` 有預設實作（逐檔呼叫 `FetchRealtimeQuoteAsync`），不必實作；
-  上游支援一次查多檔時再覆寫，以減少請求數。
+  上游支援一次查多檔時再覆寫，以減少請求數。`FetchStockListAsync(StockListOptions)` 也有預設實作（轉呼叫
+  `bool` 多載、不理會 `Source`），只有一個清單上游的來源不必實作。
 
 - **替換快取**：在 `AddTwStock()` 之前註冊自己的 `ICacheService`，會保留你的實作。
   帶 `CancellationToken` 的 `GetOrSetAsync` 多載有預設實作，可以不實作；內建的 `MemoryCacheService` 用它把

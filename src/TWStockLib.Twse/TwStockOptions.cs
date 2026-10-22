@@ -33,7 +33,7 @@ public sealed class TwStockOptions
 }
 
 /// <summary>
-/// 內建限流設定。每個上游主機（www.twse.com.tw、mis.twse.com.tw、www.tpex.org.tw、isin.twse.com.tw）分開計算：
+/// 內建限流設定。每個上游主機（www.twse.com.tw、mis.twse.com.tw、openapi.twse.com.tw、www.tpex.org.tw、isin.twse.com.tw）分開計算：
 /// 任何長度為 <see cref="Window"/> 的區間內最多送出 <see cref="PermitLimit"/> 個請求，超過的請求排隊等候，
 /// 不會失敗。排隊時間算在 HttpClient 的逾時內，呼叫端可用 <see cref="CancellationToken"/> 放棄等候。
 /// </summary>

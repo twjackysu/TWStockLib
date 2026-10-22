@@ -95,9 +95,9 @@ public class StockMarketServiceTests
     {
         var tse = FakeSource(MarketType.TSE);
         var otc = FakeSource(MarketType.OTC);
-        tse.FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        tse.FetchStockListAsync(Arg.Any<StockListOptions>(), Arg.Any<CancellationToken>())
            .Returns(new Dictionary<string, StockData>());
-        otc.FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        otc.FetchStockListAsync(Arg.Any<StockListOptions>(), Arg.Any<CancellationToken>())
            .Returns<IReadOnlyDictionary<string, StockData>>(_ => throw new HttpRequestException("boom"));
 
         var result = await BuildService(tse, otc).GetAllStockListAsync();
@@ -174,12 +174,12 @@ public class StockMarketServiceTests
     {
         var tse = FakeSource(MarketType.TSE);
         var otc = FakeSource(MarketType.OTC);
-        tse.FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        tse.FetchStockListAsync(Arg.Any<StockListOptions>(), Arg.Any<CancellationToken>())
            .Returns(new Dictionary<string, StockData>
            {
                ["2330"] = new() { Symbol = "2330", Name = "台積電", Market = MarketType.TSE },
            });
-        otc.FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        otc.FetchStockListAsync(Arg.Any<StockListOptions>(), Arg.Any<CancellationToken>())
            .Returns(new Dictionary<string, StockData>
            {
                ["6510"] = new() { Symbol = "6510", Name = "精測", Market = MarketType.OTC },
@@ -250,8 +250,6 @@ public class StockMarketServiceTests
             "2330", MarketType.TSE, new DateOnly(2025, 9, 1), new DateOnly(2025, 9, 30), ct)).ErrorCode,
         ["list"] = async (s, ct) => (await s.GetStockListAsync(MarketType.TSE, ct: ct)).ErrorCode,
         ["all"] = async (s, ct) => (await s.GetAllStockListAsync(ct: ct)).ErrorCode,
-        ["list-by-type"] = async (s, ct) => (await s.GetStockListAsync(MarketType.TSE, [SecurityType.Etf], ct)).ErrorCode,
-        ["all-by-type"] = async (s, ct) => (await s.GetAllStockListAsync([SecurityType.Etf], ct)).ErrorCode,
     };
 
     /// <summary>所有查詢都以 <paramref name="error"/>（可取得呼叫端傳入的 token）失敗的資料來源。</summary>
@@ -262,7 +260,7 @@ public class StockMarketServiceTests
               .Returns<StockQuote?>(ci => throw error(ci.Arg<CancellationToken>()));
         source.FetchHistoricalDataAsync(Arg.Any<string>(), Arg.Any<DateOnly>(), Arg.Any<DateOnly>(), Arg.Any<CancellationToken>())
               .Returns<IReadOnlyList<StockHistory>>(ci => throw error(ci.Arg<CancellationToken>()));
-        source.FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        source.FetchStockListAsync(Arg.Any<StockListOptions>(), Arg.Any<CancellationToken>())
               .Returns<IReadOnlyDictionary<string, StockData>>(ci => throw error(ci.Arg<CancellationToken>()));
         return source;
     }
@@ -273,8 +271,6 @@ public class StockMarketServiceTests
     [InlineData("history")]
     [InlineData("list")]
     [InlineData("all")]
-    [InlineData("list-by-type")]
-    [InlineData("all-by-type")]
     public async Task CallerCancellation_IsThrown_NotTurnedIntoAFailedResult(string query)
     {
         using var cts = new CancellationTokenSource();
@@ -290,8 +286,6 @@ public class StockMarketServiceTests
     [InlineData("history")]
     [InlineData("list")]
     [InlineData("all")]
-    [InlineData("list-by-type")]
-    [InlineData("all-by-type")]
     public async Task AnHttpClientTimeout_BecomesATimeoutFailure(string query)
     {
         // HttpClient 逾時丟的是 TaskCanceledException，但呼叫端的 token 並沒有被取消

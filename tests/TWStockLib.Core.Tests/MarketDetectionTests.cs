@@ -19,7 +19,7 @@ public class MarketDetectionTests
     {
         var source = Substitute.For<IStockDataSource>();
         source.Market.Returns(market);
-        source.FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        source.FetchStockListAsync(Arg.Any<StockListOptions>(), Arg.Any<CancellationToken>())
               .Returns(listed.ToFrozenDictionary(s => s, s => new StockData { Symbol = s, Name = s, Market = market }));
         source.FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<QuoteOptions>(), Arg.Any<CancellationToken>())
               .Returns(ci => listed.Contains(ci.Arg<string>()) ? Quote(ci.Arg<string>(), market) : null);
@@ -37,7 +37,7 @@ public class MarketDetectionTests
     {
         var source = Substitute.For<IStockDataSource>();
         source.Market.Returns(market);
-        source.FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        source.FetchStockListAsync(Arg.Any<StockListOptions>(), Arg.Any<CancellationToken>())
               .Returns<IReadOnlyDictionary<string, StockData>>(_ => throw new HttpRequestException("isin down"));
         return source;
     }
@@ -57,8 +57,65 @@ public class MarketDetectionTests
 
         Assert.Equal(MarketType.TSE, result.GetValueOrThrow().Market);
         await tse.Received(1).FetchRealtimeQuoteAsync("2330", QuoteOptions.NoCache, Arg.Any<CancellationToken>());
-        await tse.Received(1).FetchStockListAsync(true, Arg.Any<CancellationToken>());
-        await otc.DidNotReceiveWithAnyArgs().FetchStockListAsync(default, default);
+        await tse.Received(1).FetchStockListAsync(StockListOptions.Default, Arg.Any<CancellationToken>());
+        await tse.DidNotReceive().FetchStockListAsync(Arg.Is<StockListOptions>(o => o.IncludeWarrant), Arg.Any<CancellationToken>());
+        await otc.DidNotReceiveWithAnyArgs().FetchStockListAsync(default(StockListOptions)!, default);
+    }
+
+    /// <summary>權證只在含權證的清單中，像內建來源一樣。</summary>
+    private static IStockDataSource SourceWithWarrants(MarketType market, string[] listed, string[] warrants)
+    {
+        var source = Source(market, listed);
+        source.FetchStockListAsync(Arg.Any<StockListOptions>(), Arg.Any<CancellationToken>())
+              .Returns(ci => (IReadOnlyDictionary<string, StockData>)listed
+                  .Concat(ci.Arg<StockListOptions>().IncludeWarrant ? warrants : [])
+                  .ToFrozenDictionary(s => s, s => new StockData { Symbol = s, Name = s, Market = market }));
+        source.FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<QuoteOptions>(), Arg.Any<CancellationToken>())
+              .Returns(ci => Quote(ci.Arg<string>(), market));
+        return source;
+    }
+
+    [Fact]
+    public async Task StocksOnEitherMarket_NeverNeedTheListsWithWarrants()
+    {
+        var tse = SourceWithWarrants(MarketType.TSE, ["2330"], ["030001"]);
+        var otc = SourceWithWarrants(MarketType.OTC, ["6510"], ["700019"]);
+        var service = Service(tse, otc);
+
+        await service.GetRealtimeQuoteAsync("2330");
+        await service.GetRealtimeQuoteAsync("6510");
+
+        await tse.DidNotReceive().FetchStockListAsync(Arg.Is<StockListOptions>(o => o.IncludeWarrant), Arg.Any<CancellationToken>());
+        await otc.DidNotReceive().FetchStockListAsync(Arg.Is<StockListOptions>(o => o.IncludeWarrant), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task AWarrant_IsFoundInTheListsWithWarrants_AfterEveryListWithout()
+    {
+        var tse = SourceWithWarrants(MarketType.TSE, ["2330"], ["030001"]);
+        var otc = SourceWithWarrants(MarketType.OTC, ["6510"], ["700019"]);
+
+        var result = await Service(tse, otc).GetRealtimeQuoteAsync("030001");
+
+        Assert.Equal(MarketType.TSE, result.GetValueOrThrow().Market);
+        Received.InOrder(() =>
+        {
+            tse.FetchStockListAsync(StockListOptions.Default, Arg.Any<CancellationToken>());
+            otc.FetchStockListAsync(StockListOptions.Default, Arg.Any<CancellationToken>());
+            tse.FetchStockListAsync(Arg.Is<StockListOptions>(o => o.IncludeWarrant), Arg.Any<CancellationToken>());
+        });
+        await otc.DidNotReceive().FetchStockListAsync(Arg.Is<StockListOptions>(o => o.IncludeWarrant), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task AListThatFailedWithoutWarrants_IsNotFetchedAgainWithWarrants_InTheSameCall()
+    {
+        var tse = FailingListSource(MarketType.TSE);
+
+        var result = await Service(tse, SourceWithWarrants(MarketType.OTC, ["6510"], ["700019"])).GetRealtimeQuoteAsync("030001");
+
+        Assert.Equal(StockErrorCodes.UpstreamError, result.ErrorCode);
+        await tse.Received(1).FetchStockListAsync(Arg.Any<StockListOptions>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -160,8 +217,8 @@ public class MarketDetectionTests
 
         await Service(tse, otc).GetRealtimeQuotesAsync(["6510", "2330", "8069"], CancellationToken.None);
 
-        await tse.Received(1).FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>());
-        await otc.Received(1).FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>());
+        await tse.Received(1).FetchStockListAsync(Arg.Any<StockListOptions>(), Arg.Any<CancellationToken>());
+        await otc.Received(1).FetchStockListAsync(Arg.Any<StockListOptions>(), Arg.Any<CancellationToken>());
     }
 
     // ── 追蹤 ──────────────────────────────────────────────────────────────────
@@ -209,7 +266,7 @@ public class MarketDetectionTests
     {
         var tse = Source(MarketType.TSE, "2330");
         var attempts = 0;
-        tse.FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        tse.FetchStockListAsync(Arg.Any<StockListOptions>(), Arg.Any<CancellationToken>())
            .Returns(_ => ++attempts == 1
                ? throw new HttpRequestException("isin down")
                : Task.FromResult<IReadOnlyDictionary<string, StockData>>(new Dictionary<string, StockData>
@@ -265,6 +322,6 @@ public class MarketDetectionTests
         Assert.Throws<ArgumentException>(() => service.WatchAsync(" "));
         Assert.Throws<ArgumentException>(() => service.WatchAsync(Array.Empty<string>()));
         Assert.Throws<ArgumentOutOfRangeException>(() => service.WatchAsync(["2330"], TimeSpan.FromSeconds(1)));
-        tse.DidNotReceiveWithAnyArgs().FetchStockListAsync(default, default);
+        tse.DidNotReceiveWithAnyArgs().FetchStockListAsync(default(StockListOptions)!, default);
     }
 }

@@ -95,8 +95,8 @@ TWStockLib.slnx
 ├── src/
 │   ├── TWStockLib.Core/                   ← 無第三方 SDK 依賴（只靠 BCL + Microsoft.Extensions）
 │   │   ├── IStockMarketService.cs / StockMarketService.cs / StockMarketServiceExtensions.cs
-│   │   ├── StockQuote.cs / StockHistory.cs / StockData.cs / PriceLevel.cs / MarketType.cs / SecurityType.cs
-│   │   ├── QuoteOptions.cs
+│   │   ├── StockQuote.cs / StockHistory.cs / StockData.cs / PriceLevel.cs / MarketType.cs
+│   │   ├── QuoteOptions.cs / StockListOptions.cs（含 StockListSource）
 │   │   ├── StockResult.cs                 ← Result Pattern + StockErrorCodes + StockQueryException
 │   │   └── Abstractions/                  ← 擴充點
 │   │       ├── IStockDataSource.cs
@@ -144,10 +144,9 @@ public interface IStockMarketService
 ```
 
 - 只傳 `CancellationToken` 的報價查詢由 `StockMarketServiceExtensions` 提供，介面實作者只需實作一個方法。
-- 依證券類型取清單（3.1 起）同樣是擴充方法：`GetStockListAsync(market, IReadOnlyCollection<SecurityType>)` 與
-  `GetAllStockListAsync(IReadOnlyCollection<SecurityType>)`。它們呼叫既有的 `includeWarrant` 多載（要權證時取完整清單）
-  再依 `StockData.SecurityType` 過濾，介面不必新增成員；以集合運算式 `[SecurityType.Etf]` 呼叫時不會與 `bool` 多載混淆。
 - 選項用 `QuoteOptions`（`Default` / `NoCache`）而非 `bool` 旗標參數：新增選項不必再加多載。
+  股票清單的 `includeWarrant` 是 3.0 以前就有的旗標，保留不動；3.1 要多一個「上游」選項時，改加
+  `StockListOptions`（`IncludeWarrant`、`Source`）的多載，不再往 `bool` 後面堆參數。
 
 3.1 新增（只加不改，既有成員的簽章不變）：
 
@@ -157,6 +156,12 @@ Task<IReadOnlyDictionary<string, StockResult<StockQuote>>> GetRealtimeQuotesAsyn
     IEnumerable<(string Symbol, MarketType Market)> symbols, QuoteOptions? options = null, CancellationToken ct = default);
 IAsyncEnumerable<StockQuote> WatchAsync(
     IEnumerable<(string Symbol, MarketType Market)> symbols, TimeSpan? interval = null, CancellationToken ct = default);
+
+// 股票清單選上游（StockListSource.OpenApi 預設 / Isin）；options 必填，與 bool 多載不會混淆
+Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetStockListAsync(
+    MarketType market, StockListOptions options, CancellationToken ct = default);
+Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetAllStockListAsync(
+    StockListOptions options, CancellationToken ct = default);
 
 // 不指定市場：依股票清單判斷上市或上櫃
 Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(string symbol, QuoteOptions? options = null, CancellationToken ct = default);
@@ -182,6 +187,9 @@ public interface IStockDataSource
         IReadOnlyList<string> symbols, QuoteOptions options, CancellationToken ct = default) { /* 逐檔 */ }
     Task<IReadOnlyList<StockHistory>> FetchHistoricalDataAsync(string symbol, DateOnly from, DateOnly to, CancellationToken ct = default);
     Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(bool includeWarrant = false, CancellationToken ct = default);
+    // 3.1：預設實作轉呼叫 bool 多載、不理會 Source，既有的第三方來源不必修改；StockMarketService 一律呼叫這個多載
+    Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(StockListOptions options, CancellationToken ct = default)
+        => FetchStockListAsync(options.IncludeWarrant, ct);
 }
 
 public interface ICacheService
@@ -197,8 +205,9 @@ public interface ICacheService
 
 `ICacheService` 以兩個意圖明確的方法取代「`bypassCache` 布林參數」：呼叫端一看就知道是「有就用」還是「強制更新」。
 
-`IStockDataSource.FetchStockListAsync` 的簽章在 3.1 不變：`includeWarrant: true` 本來就是「完整清單」，
-依類型過濾只需要來源填好 `StockData.SecurityType`。改成新方法或新參數只會讓第三方來源多一種寫法，換不到能力。
+選清單上游是內建來源才有的能力（證交所家族有 OpenAPI 與 ISIN 兩種），但選項得一路傳到資料來源，
+所以 `IStockDataSource` 也加了 `StockListOptions` 多載；以預設介面實作轉呼叫原本的 `bool` 多載，第三方來源照常編譯、
+行為不變（忽略 `Source`）。`IStockMarketService` 的新多載則照 3.1 其他新成員的做法直接加在介面上。
 
 設定與 HTTP 管線的擴充點（3.1 起，位於 `TWStockLib` 套件）：
 
@@ -335,20 +344,35 @@ public static IServiceCollection AddTwStock(this IServiceCollection services)
 - 快取時間：即時報價 30 秒；股票清單與已結束月份的歷史 1 天；當月（以台灣時間判斷）與未來月份的歷史 30 分鐘。
   3.1 起可由 `TwStockOptions` 覆寫，預設值不變；不合法的值（0 或負）在第一次取得服務時以 `OptionsValidationException` 回報。
 
-### 股票清單：一次下載、讀取時過濾（3.1 起）
+### 股票清單：預設 OpenAPI，可選 ISIN（3.1 起）
 
-ISIN 清單頁上市約 9.6 MB、上櫃約 3.2 MB（實測上市下載約 6～13 秒、上櫃 2～24 秒），解析也要時間。3.0 的快取鍵含
-`includeWarrant`，含與不含權證各下載一次。3.1 起：
+3.0 的清單來自 ISIN 證券編碼頁：每個市場一頁 Big5 網頁（上市約 9.7 MB、上櫃約 3.2 MB），上游不壓縮、傳得慢且不穩定
+（2026/10 實測上市 5～78 秒、上櫃 2～24 秒），AngleSharp 解析上市頁還要 1.3～2.4 秒、配置約 300 MB。
+不指定市場的查詢（§10.1）第一次呼叫就得等這一頁。3.1 起清單有兩種上游，以 `StockListOptions.Source` 選擇：
 
-- 每個市場只快取一份完整清單（鍵 `stock_list_{Market}`），型別仍是 `IReadOnlyDictionary<string, StockData>`，
-  自訂 `ICacheService`（例如序列化到外部儲存）不必認識新型別。
-- 「不含權證」是預設查詢，在讀取時過濾，並以 `ConditionalWeakTable` 依完整清單的實例記住結果：同一份快取只過濾一次，
-  快取換新後舊的過濾結果跟著被回收，不會比完整清單活得久。
-- 依類型過濾（擴充方法）每次呼叫時過濾；組合太多，不值得記住。
-- `SecurityType` 由 CFICode（ISO 10962）前兩碼推得，對照以兩個清單頁實際出現的代碼核對：`ES` 普通股（含創新板、KY 股）、
-  `EP` / `EF` 特別股、`ED` TDR、`CE` ETF、`CM` ETN、`CB` REIT 與 `DA` 資產基礎證券（台灣都稱「受益證券」）、`RW` 權證。
-  `CM` 在標準中是「其他集合投資工具」，兩個市場目前只有 ETN 使用；原始代碼另以 `StockData.CfiCode` 公開，
-  分類不夠細或上游出現新代碼時，呼叫端不必等函式庫更新。
+| | `OpenApi`（預設） | `Isin` |
+|---|---|---|
+| 權證以外 | 上市 `exchangeReport/STOCK_DAY_ALL`（壓縮後約 50 KB）、上櫃 `tpex_mainboard_quotes`（約 360 KB） | 每個市場一頁（含權證） |
+| 權證 | 上市 `opendata/t187ap37_L`（壓縮後約 1.8 MB、解壓後約 45 MB，含已到期的權證，依最後交易日排除）、上櫃 `tpex_warrant_daily_quts`（約 3.8 MB） | 同上一頁 |
+| 實測 | 權證以外 0.1～0.2 秒；含權證約 1 秒 | 數秒到 78 秒 |
+| 涵蓋（2026/10/22，權證以外） | 2,400 檔 | 2,412 檔 |
+
+- **預設選 OpenAPI**：這個函式庫的清單主要用來查代號名稱、判斷市場，速度比少數證券的完整性重要。
+  OpenAPI 只列有行情資料的證券，少了停止交易中、尚未掛牌的證券與資產基礎證券（2026/10/22 共 12 檔）；
+  上市清單收盤後才更新，新掛牌的證券晚一個交易日出現。需要這些時呼叫端改用 `Isin`，由呼叫端決定，函式庫不自動切換。
+- **ISIN 專屬欄位已移除**：3.1 開發期間曾在 `StockData` 加上 `SecurityType`、`Industry`、`Isin`、`ListedDate`、`CfiCode`
+  （都來自 ISIN 頁），以及依證券類型過濾的擴充方法。預設上游改成 OpenAPI 後這些欄位填不出來，只有一種上游會填的欄位比沒有更糟，
+  在 3.1 發佈前拿掉。
+- **權證依代號判斷**：上市權證 6 碼且 03～08 開頭、上櫃權證 6 碼且 7 開頭（認購、認售與牛熊證都在內）。
+  2026/10/22 以 ISIN 頁的 CFICode（`RW` 開頭即權證）核對兩個市場共 53,863 檔，結果完全一致；兩種上游用同一套規則。
+- **權證另外下載**：OpenAPI 的權證與其他證券分屬不同端點，上市權證清單比其他清單大得多，只在要求含權證時下載。
+  兩份分開快取（鍵 `stock_list_openapi_{Market}` 與 `..._warrants`），合併結果依兩份快取的實例記住，兩份都沒換新就直接沿用。
+  上櫃原本用的「上櫃股票行情」含權證、約 5 MB，2026/10/22 晚間實測三次有兩次傳到一半被上游中斷，改用上面兩個較小的端點。
+- **ISIN 一次下載**：ISIN 頁含權證，每個市場只快取一份（鍵 `stock_list_isin_{Market}`），不含權證的版本在讀取時過濾，
+  並以 `ConditionalWeakTable` 依清單實例記住結果：同一份快取只過濾一次，快取換新後舊的過濾結果跟著被回收。
+- 快取的型別都是 `IReadOnlyDictionary<string, StockData>`，自訂 `ICacheService`（例如序列化到外部儲存）不必認識內部型別。
+- OpenAPI 回應是空陣列或不是陣列時拋出 `FormatException`（`PARSE_ERROR`）：清單快取一整天，不能把一次異常的空回應當成「沒有任何股票」。
+- 具名 HttpClient 的預設 primary handler 開啟 `AutomaticDecompression`：OpenAPI 以 brotli 壓縮，上市權證清單差了 25 倍。
 
 ### 合併同時發生的未命中（single-flight，3.1 起）
 
@@ -415,11 +439,12 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 
 **自動判斷市場**：不指定 `MarketType` 的多載依股票清單判斷代號屬於哪個市場。
 
-- 清單用 `GetStockListAsync(market, includeWarrant: true)`：內建來源只快取一份完整清單（見 §8），與呼叫端的清單查詢共用同一次下載（預設快取 1 天），不另外維護對照表。
-- 依註冊順序逐一取得清單，全部找到就停：只查上市股票時不會下載上櫃清單。第一次呼叫的成本是下載清單（上市約 9.7 MB，實測 12～78 秒，其中 AngleSharp 解析約 1.5 秒，其餘是傳輸；上櫃約 3.2 MB），
-  文件建議啟動時以 `GetAllStockListAsync()` 預熱。
-- 含權證：權證也能自動判斷，且內建來源含不含權證是同一份快取，不會多下載；查字典是 O(1)，上市清單 4 萬筆（九成以上是權證）也無妨。
-  指數（`t00`）不在 ISIN 清單中，回傳 `NOT_FOUND`，請改用指定市場的多載。
+- 清單用預設上游（OpenAPI）的 `GetStockListAsync`，與呼叫端的清單查詢共用快取（預設 1 天），不另外維護對照表。
+  第一次呼叫的成本是下載清單，權證以外的清單 0.1～0.2 秒（3.0 的 ISIN 頁要數秒到 78 秒）。
+- 分兩輪：先依註冊順序查不含權證的清單，全部找到就停（只查上市股票時不會下載上櫃清單）；還找不到的代號再查含權證的清單。
+  上市權證清單解壓後約 45 MB，查一般股票用不到；權證仍然能自動判斷。第一輪失敗的市場第二輪不重試。
+- 指數（`t00`）、停止交易中與當天才掛牌的證券不在 OpenAPI 清單中，回傳 `NOT_FOUND`，請改用指定市場的多載。
+  不為此改查 ISIN：打錯的代號也會觸發那次慢速下載。
 - 有清單取得失敗、其他清單又找不到時，回傳該失敗而非 `NOT_FOUND`：代號可能就在沒取得的那份清單裡。
 - 不公開「查代號屬於哪個市場」的方法：`GetStockListAsync` / `GetAllStockListAsync` 已能做到，多一個公開成員就多一個 SemVer 承諾。
 
@@ -478,9 +503,9 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 | 未命名 HttpClient | 預設逾時、無 User-Agent、無法單獨設定 | 具名 client `TwStockOptions.HttpClientName`，明確逾時與 User-Agent |
 | 沒有限流 | 長區間歷史、多檔追蹤可能連續打上游，被封鎖 IP | 每主機 3 個請求 / 5 秒，排隊等候 |
 | 加不了重試 | 拿不到 client 的 builder | 以 client 名稱自行加 `AddStandardResilienceHandler()`，重試也經過限流 |
-| 清單重複下載 | 含 / 不含權證各下載解析一次數 MB 的 ISIN 頁 | 快取完整清單，讀取時過濾 |
+| 清單太慢 | 每個市場一頁數 MB 的 ISIN 網頁，實測 5～78 秒 | 預設改用 OpenAPI（0.1～0.2 秒），`StockListOptions.Source = Isin` 可選完整但較慢的 ISIN |
+| 清單重複下載 | 含 / 不含權證各下載解析一次 | 權證以外與權證分開快取（OpenAPI）或只下載一次再過濾（ISIN） |
 | 並行未命中 | 同時的 N 個查詢各打一次上游 | `MemoryCacheService` single-flight，取消只影響自己 |
-| 清單資訊太少 | 只有代號、名稱、市場別；權證以外無法分類 | `SecurityType`、`Industry`、`Isin`、`ListedDate`、`CfiCode`，可依類型過濾 |
 | 多檔報價很慢 | 一檔一個 MIS 請求，加上限流後 10 檔約 15 秒 | `GetRealtimeQuotesAsync` / 多檔 `WatchAsync`，同一市場每 50 檔一個請求 |
 | 一定要知道市場 | 每個查詢都要傳 `MarketType` | 不指定市場的多載，依快取的股票清單判斷 |
 | 代號直接組進 URL | `2330.tw\|tse_2317` 會多查一檔 | 代號格式檢查（英數字、最多 10 碼）+ URL 跳脫 |
@@ -513,4 +538,6 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 - ❌ 不內建重試 / 斷路器 —— 只提供具名 HttpClient 讓使用者自己加，避免強迫相依 Polly，也避免替使用者決定重試策略。
 - ❌ 不提供逐主機的限流設定 —— 四個上游主機共用同一組 `PermitLimit` / `Window`，各自計算；目前沒有個別調整的需求。
 - ❌ 不把上市與上櫃的報價合併成同一個 MIS 請求 —— 會讓一個資料來源替別的市場查詢；混合清單每輪多一個請求而已。
-- ❌ 自動判斷市場不涵蓋指數 —— `t00` 等不在 ISIN 清單中，另建對照表得自己維護；指數請指定市場。
+- ❌ 自動判斷市場不涵蓋指數 —— `t00` 等不在股票清單中，另建對照表得自己維護；指數請指定市場。
+- ❌ OpenAPI 清單失敗時不自動改抓 ISIN —— 兩個上游的取捨（快 / 完整）由呼叫端以 `StockListSource` 決定；
+  自動切換會讓同一個選項有時快、有時慢，失敗時還要再多等一次慢速下載。

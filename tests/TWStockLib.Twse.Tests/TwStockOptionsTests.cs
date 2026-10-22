@@ -26,7 +26,9 @@ public class TwStockOptionsTests
         public Task<string> GetStringAsync(string url, CancellationToken ct = default) => Task.FromResult(
             url.Contains("getStockInfo", StringComparison.Ordinal)
                 ? """{"msgArray":[{"c":"2330","n":"台積電","z":"600.00","y":"596.00","tlong":"1699000000000"}]}"""
-                : """{"stat":"OK","data":[]}""");
+                : url.Contains("openapi", StringComparison.Ordinal)
+                    ? """[{"Code":"2330","Name":"台積電"}]"""
+                    : """{"stat":"OK","data":[]}""");
 
         public Task<string> GetBig5StringAsync(string url, CancellationToken ct = default) => Task.FromResult("<html></html>");
     }
@@ -80,7 +82,7 @@ public class TwStockOptionsTests
         Assert.Equal(TimeSpan.FromSeconds(30), expiries["realtime_quote_TSE_2330"]);
         Assert.Equal(TimeSpan.FromDays(1), expiries["history_TSE_2330_202508"]);
         Assert.Equal(TimeSpan.FromMinutes(30), expiries["history_TSE_2330_202509"]);
-        Assert.Equal(TimeSpan.FromDays(1), expiries["stock_list_TSE"]);
+        Assert.Equal(TimeSpan.FromDays(1), expiries["stock_list_openapi_TSE"]);
     }
 
     [Fact]
@@ -97,7 +99,7 @@ public class TwStockOptionsTests
         Assert.Equal(TimeSpan.FromSeconds(10), expiries["realtime_quote_TSE_2330"]);
         Assert.Equal(TimeSpan.FromDays(7), expiries["history_TSE_2330_202508"]);
         Assert.Equal(TimeSpan.FromMinutes(5), expiries["history_TSE_2330_202509"]);
-        Assert.Equal(TimeSpan.FromHours(6), expiries["stock_list_TSE"]);
+        Assert.Equal(TimeSpan.FromHours(6), expiries["stock_list_openapi_TSE"]);
     }
 
     [Fact]
@@ -111,7 +113,7 @@ public class TwStockOptionsTests
         });
 
         Assert.Equal(TimeSpan.FromSeconds(20), expiries["realtime_quote_TSE_2330"]);
-        Assert.Equal(TimeSpan.FromHours(6), expiries["stock_list_TSE"]);
+        Assert.Equal(TimeSpan.FromHours(6), expiries["stock_list_openapi_TSE"]);
     }
 
     [Fact]

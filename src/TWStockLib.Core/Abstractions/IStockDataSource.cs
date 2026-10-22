@@ -40,12 +40,18 @@ public interface IStockDataSource
     Task<IReadOnlyList<StockHistory>> FetchHistoricalDataAsync(
         string symbol, DateOnly from, DateOnly to, CancellationToken ct = default);
 
-    /// <summary>
-    /// 取得此市場的股票清單；<paramref name="includeWarrant"/> 為 <c>true</c> 時即完整清單。
-    /// 實作應填入 <see cref="StockData.SecurityType"/>，呼叫端才能依證券類型過濾（未填的項目為
-    /// <see cref="SecurityType.Unknown"/>，只會出現在不指定類型的查詢中）。內建來源只下載一次完整清單，
-    /// 不含權證的版本在讀取時過濾。
-    /// </summary>
+    /// <summary>取得此市場的股票清單；<paramref name="includeWarrant"/> 為 <c>true</c> 時含權證（含牛熊證）。</summary>
     Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(
         bool includeWarrant = false, CancellationToken ct = default);
+
+    /// <summary>
+    /// 以 <paramref name="options"/> 取得此市場的股票清單。<c>StockMarketService</c> 一律呼叫這個多載。
+    /// </summary>
+    /// <remarks>
+    /// 預設實作不理會 <see cref="StockListOptions.Source"/>，呼叫 <see cref="FetchStockListAsync(bool, CancellationToken)"/>，
+    /// 既有的實作不必修改；有多個上游可選的來源應覆寫。
+    /// </remarks>
+    Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(
+        StockListOptions options, CancellationToken ct = default)
+        => FetchStockListAsync(options.IncludeWarrant, ct);
 }

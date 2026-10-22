@@ -287,103 +287,97 @@ public class TwseStockParserTests
     [Fact]
     public void ParseStockList_ReturnsTheFullList_IncludingWarrantsAndBullBearCertificates()
     {
-        // 是否排除權證改由資料來源在讀取時過濾，parser 一律回傳完整清單
+        // 是否排除權證由資料來源在讀取時依代號過濾，parser 一律回傳完整清單
         var list = TwseStockParser.ParseStockList(IsinFixtures.Tse, MarketType.TSE);
 
         Assert.Equal(15, list.Count);
-        Assert.All(["030001", "03004T", "03726B", "03989C"],
-            symbol => Assert.Equal(SecurityType.Warrant, list[symbol].SecurityType));
+        Assert.All(["030001", "03004T", "03726B", "03989C"], symbol => Assert.Contains(symbol, list.Keys));
     }
 
     [Fact]
-    public void ParseStockList_MapsEveryIsinColumn()
+    public void ParseStockList_MapsSymbolNameAndMarket()
     {
         var list = TwseStockParser.ParseStockList(IsinFixtures.Tse, MarketType.TSE);
 
-        Assert.Equal(new StockData
-        {
-            Symbol = "2330",
-            Name = "台積電",
-            Market = MarketType.TSE,
-            SecurityType = SecurityType.CommonStock,
-            Industry = "半導體業",
-            Isin = "TW0002330008",
-            ListedDate = new DateOnly(1994, 9, 5),
-            CfiCode = "ESVUFR",
-        }, list["2330"]);
+        Assert.Equal(new StockData { Symbol = "2330", Name = "台積電", Market = MarketType.TSE }, list["2330"]);
+        Assert.Equal("華德動能-創", list["2237"].Name);
     }
 
     [Fact]
-    public void ParseStockList_SecuritiesWithoutAnIndustry_HaveNullIndustry()
-    {
-        var list = TwseStockParser.ParseStockList(IsinFixtures.Tse, MarketType.TSE);
-
-        Assert.Null(list["0050"].Industry);
-        Assert.Null(list["030001"].Industry);
-        Assert.Equal("金融保險業", list["2887Z1"].Industry);
-    }
-
-    [Theory]
-    [InlineData("1101", SecurityType.CommonStock)]
-    [InlineData("3673", SecurityType.CommonStock)]       // KY 股：ESVTFR
-    [InlineData("2237", SecurityType.CommonStock)]       // 創新板
-    [InlineData("2887Z1", SecurityType.PreferredStock)]  // EPNCAR
-    [InlineData("2897B", SecurityType.PreferredStock)]   // 可轉換特別股 EFNRAR
-    [InlineData("030001", SecurityType.Warrant)]         // 認購
-    [InlineData("03004T", SecurityType.Warrant)]         // 認售
-    [InlineData("03989C", SecurityType.Warrant)]         // 牛證
-    [InlineData("03726B", SecurityType.Warrant)]         // 熊證
-    [InlineData("0050", SecurityType.Etf)]
-    [InlineData("00631L", SecurityType.Etf)]             // 槓桿 ETF：CEOGDU
-    [InlineData("020000", SecurityType.Etn)]
-    [InlineData("910322", SecurityType.DepositaryReceipt)]
-    [InlineData("01001T", SecurityType.BeneficiarySecurity)] // REIT：CBCIXU
-    public void ParseStockList_Tse_DerivesTheSecurityTypeFromTheCfiCode(string symbol, SecurityType expected)
-    {
-        var list = TwseStockParser.ParseStockList(IsinFixtures.Tse, MarketType.TSE);
-
-        Assert.Equal(expected, list[symbol].SecurityType);
-    }
-
-    [Theory]
-    [InlineData("6510", SecurityType.CommonStock)]
-    [InlineData("8349A", SecurityType.PreferredStock)]
-    [InlineData("700019", SecurityType.Warrant)]
-    [InlineData("72479U", SecurityType.Warrant)]
-    [InlineData("00679B", SecurityType.Etf)]
-    [InlineData("020001", SecurityType.Etn)]
-    [InlineData("01111S", SecurityType.BeneficiarySecurity)] // 資產基礎證券：DAFUFR
-    public void ParseStockList_Otc_DerivesTheSecurityTypeFromTheCfiCode(string symbol, SecurityType expected)
+    public void ParseStockList_Otc()
     {
         var list = TwseStockParser.ParseStockList(IsinFixtures.Otc, MarketType.OTC);
 
         Assert.Equal(7, list.Count);
-        Assert.Equal(expected, list[symbol].SecurityType);
-        Assert.Equal(MarketType.OTC, list[symbol].Market);
+        Assert.Equal(new StockData { Symbol = "6510", Name = "精測", Market = MarketType.OTC }, list["6510"]);
     }
 
-    [Theory]
-    [InlineData("DBFUFR", SecurityType.Bond)]   // 一般公司債
-    [InlineData("DCFUFR", SecurityType.Bond)]   // 可轉換公司債
-    [InlineData("ECVUFR", SecurityType.Other)]  // 可轉換普通股：兩個市場目前都沒有
-    [InlineData("CIOGEU", SecurityType.Other)]  // 一般基金
-    [InlineData("X", SecurityType.Unknown)]
-    [InlineData("", SecurityType.Unknown)]
-    public void ToSecurityType_CodesNotOnTheCurrentPages(string cfiCode, SecurityType expected)
+    // ── 股票清單（OpenAPI）────────────────────────────────────────────────────
+
+    [Fact]
+    public void ParseTwseOpenApiStockList_MapsCodeAndName()
     {
-        Assert.Equal(expected, TwseStockParser.ToSecurityType(cfiCode));
+        var list = TwseStockParser.ParseTwseOpenApiStockList(OpenApiFixtures.TwseStockDayAll, MarketType.TSE);
+
+        Assert.Equal(8, list.Count);
+        Assert.Equal(new StockData { Symbol = "00631L", Name = "元大台灣50正2", Market = MarketType.TSE }, list["00631L"]);
+        Assert.True(((ICollection<KeyValuePair<string, StockData>>)list).IsReadOnly);
     }
 
     [Fact]
-    public void ParseStockList_ABlankCfiCode_IsUnknown()
+    public void ParseTpexOpenApiStockList_MapsCodeAndName()
     {
-        var html = IsinFixtures.Tse.Replace(
-            "水泥工業</td><td bgcolor=#FAFAD2>ESVUFR</td>", "水泥工業</td><td bgcolor=#FAFAD2></td>");
-        Assert.NotEqual(IsinFixtures.Tse, html);
+        var list = TwseStockParser.ParseTpexOpenApiStockList(OpenApiFixtures.TpexQuotes, MarketType.OTC);
 
-        var list = TwseStockParser.ParseStockList(html, MarketType.TSE);
+        Assert.Equal(4, list.Count);
+        Assert.Equal(new StockData { Symbol = "6510", Name = "精測", Market = MarketType.OTC }, list["6510"]);
+    }
 
-        Assert.Equal(SecurityType.Unknown, list["1101"].SecurityType);
-        Assert.Null(list["1101"].CfiCode);
+    [Fact]
+    public void ParseTpexOpenApiWarrantList_MapsCodeAndName()
+    {
+        var list = TwseStockParser.ParseTpexOpenApiWarrantList(OpenApiFixtures.TpexWarrants, MarketType.OTC);
+
+        Assert.Equal(["700019", "72479U"], list.Keys.Order());
+        Assert.Equal("擎亞群益5B售01", list["72479U"].Name);
+    }
+
+    [Theory]
+    [InlineData(2026, 10, 22, new[] { "030001", "03004T", "03080T", "03726B" })]
+    [InlineData(2026, 10, 23, new[] { "030001", "03004T", "03726B" })]          // 03080T 昨天最後交易
+    [InlineData(2026, 10, 14, new[] { "030001", "03001T", "03004T", "03080T", "03726B" })]
+    public void ParseTwseOpenApiWarrantList_KeepsWarrantsUntilTheirLastTradingDay(int year, int month, int day, string[] expected)
+    {
+        var list = TwseStockParser.ParseTwseOpenApiWarrantList(OpenApiFixtures.TwseWarrants, MarketType.TSE, new DateOnly(year, month, day));
+
+        Assert.Equal(expected, list.Keys.Order());
+    }
+
+    [Fact]
+    public void ParseTwseOpenApiWarrantList_AnUnreadableLastTradingDay_IsKept()
+    {
+        const string json = """[{"權證代號":"030001","權證簡稱":"友達台新6A購01","最後交易日":"N/A"}]""";
+
+        var list = TwseStockParser.ParseTwseOpenApiWarrantList(json, MarketType.TSE, new DateOnly(2026, 10, 22));
+
+        Assert.Equal(["030001"], list.Keys);
+    }
+
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("""{"stat":"OK","data":[]}""")]
+    public void ParseOpenApiStockLists_AnEmptyOrUnexpectedResponse_Throws_SoItIsNotCachedAsAnEmptyList(string json)
+    {
+        Assert.Throws<FormatException>(() => TwseStockParser.ParseTwseOpenApiStockList(json, MarketType.TSE));
+        Assert.Throws<FormatException>(() => TwseStockParser.ParseTpexOpenApiStockList(json, MarketType.OTC));
+        Assert.Throws<FormatException>(() => TwseStockParser.ParseTpexOpenApiWarrantList(json, MarketType.OTC));
+        Assert.Throws<FormatException>(() => TwseStockParser.ParseTwseOpenApiWarrantList(json, MarketType.TSE, new DateOnly(2026, 10, 22)));
+    }
+
+    [Fact]
+    public void ParseOpenApiStockLists_AnHtmlErrorPage_IsAJsonError()
+    {
+        Assert.ThrowsAny<System.Text.Json.JsonException>(
+            () => TwseStockParser.ParseTwseOpenApiStockList("<html>系統忙碌中</html>", MarketType.TSE));
     }
 }

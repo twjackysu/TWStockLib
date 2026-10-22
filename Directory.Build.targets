@@ -12,9 +12,19 @@
 
   <!--
     註：SourceLink 已由 .NET 8+ SDK 內建，不再參考 Microsoft.SourceLink.GitHub。
-    目前沒有要放的設定，但保留本檔：MSBuild 會往上層目錄找第一個 Directory.Build.targets，
+    保留本檔也是因為 MSBuild 會往上層目錄找第一個 Directory.Build.targets，
     若 repo 放在另一個 checkout 底下（例如 .claude/worktrees/ 的 git worktree），
     刪掉本檔會誤吃到外層 checkout 的版本。
   -->
+
+  <!--
+    Package validation：dotnet pack 時與 NuGet 上的基準版本比對公開 API，
+    3.x 期間任何破壞相容的變更（刪除或改簽章）都會讓打包失敗。
+    發佈下一個主版本（4.0）時，把基準改成新的主版本，或對刻意的破壞性變更產生 CompatibilitySuppressions.xml。
+  -->
+  <PropertyGroup Condition="'$(IsPackable)' == 'true'">
+    <EnablePackageValidation>true</EnablePackageValidation>
+    <PackageValidationBaselineVersion>3.0.0</PackageValidationBaselineVersion>
+  </PropertyGroup>
 
 </Project>

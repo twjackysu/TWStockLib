@@ -1,6 +1,6 @@
 # TWStockLib — 設計文件
 
-> 對應版本：3.1
+> 對應版本：3.0
 > 目標：**職責清楚、可測試、易擴充、可多框架發佈到 NuGet** 的類別庫。
 > 設計心法承襲 `DataAnalysisLibrary`，但**刻意不過度設計**——只引入對本 lib 真正有價值的抽象。
 
@@ -126,52 +126,37 @@ namespace TWStockLib;
 
 public interface IStockMarketService
 {
+    // 指定市場
     Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(
         string symbol, MarketType market, QuoteOptions? options = null, CancellationToken ct = default);
-
+    Task<IReadOnlyDictionary<string, StockResult<StockQuote>>> GetRealtimeQuotesAsync(
+        IEnumerable<(string Symbol, MarketType Market)> symbols, QuoteOptions? options = null, CancellationToken ct = default);
     Task<StockResult<IReadOnlyList<StockHistory>>> GetHistoricalDataAsync(
         string symbol, MarketType market, DateOnly from, DateOnly to, CancellationToken ct = default);
-
     Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetStockListAsync(
-        MarketType market, bool includeWarrant = false, CancellationToken ct = default);
-
+        MarketType market, StockListOptions? options = null, CancellationToken ct = default);
     Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetAllStockListAsync(
-        bool includeWarrant = false, CancellationToken ct = default);
-
+        StockListOptions? options = null, CancellationToken ct = default);
     IAsyncEnumerable<StockQuote> WatchAsync(
         string symbol, MarketType market, TimeSpan? interval = null, CancellationToken ct = default);
+    IAsyncEnumerable<StockQuote> WatchAsync(
+        IEnumerable<(string Symbol, MarketType Market)> symbols, TimeSpan? interval = null, CancellationToken ct = default);
+
+    // 不指定市場：依股票清單判斷上市或上櫃
+    Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(string symbol, QuoteOptions? options = null, CancellationToken ct = default);
+    Task<IReadOnlyDictionary<string, StockResult<StockQuote>>> GetRealtimeQuotesAsync(
+        IEnumerable<string> symbols, QuoteOptions? options = null, CancellationToken ct = default);
+    Task<StockResult<IReadOnlyList<StockHistory>>> GetHistoricalDataAsync(
+        string symbol, DateOnly from, DateOnly to, CancellationToken ct = default);
+    IAsyncEnumerable<StockQuote> WatchAsync(string symbol, TimeSpan? interval = null, CancellationToken ct = default);
+    IAsyncEnumerable<StockQuote> WatchAsync(IEnumerable<string> symbols, TimeSpan? interval = null, CancellationToken ct = default);
 }
 ```
 
-- 只傳 `CancellationToken` 的報價查詢由 `StockMarketServiceExtensions` 提供，介面實作者只需實作一個方法。
-- 選項用 `QuoteOptions`（`Default` / `NoCache`）而非 `bool` 旗標參數：新增選項不必再加多載。
-  股票清單的 `includeWarrant` 是 3.0 以前就有的旗標，保留不動；3.1 要多一個「上游」選項時，改加
-  `StockListOptions`（`IncludeWarrant`、`Source`）的多載，不再往 `bool` 後面堆參數。
-
-3.1 新增（只加不改，既有成員的簽章不變）：
-
-```csharp
-// 批次報價與多檔追蹤：同一市場合併查詢
-Task<IReadOnlyDictionary<string, StockResult<StockQuote>>> GetRealtimeQuotesAsync(
-    IEnumerable<(string Symbol, MarketType Market)> symbols, QuoteOptions? options = null, CancellationToken ct = default);
-IAsyncEnumerable<StockQuote> WatchAsync(
-    IEnumerable<(string Symbol, MarketType Market)> symbols, TimeSpan? interval = null, CancellationToken ct = default);
-
-// 股票清單選上游（StockListSource.OpenApi 預設 / Isin）；options 必填，與 bool 多載不會混淆
-Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetStockListAsync(
-    MarketType market, StockListOptions options, CancellationToken ct = default);
-Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetAllStockListAsync(
-    StockListOptions options, CancellationToken ct = default);
-
-// 不指定市場：依股票清單判斷上市或上櫃
-Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(string symbol, QuoteOptions? options = null, CancellationToken ct = default);
-Task<IReadOnlyDictionary<string, StockResult<StockQuote>>> GetRealtimeQuotesAsync(
-    IEnumerable<string> symbols, QuoteOptions? options = null, CancellationToken ct = default);
-Task<StockResult<IReadOnlyList<StockHistory>>> GetHistoricalDataAsync(
-    string symbol, DateOnly from, DateOnly to, CancellationToken ct = default);
-IAsyncEnumerable<StockQuote> WatchAsync(string symbol, TimeSpan? interval = null, CancellationToken ct = default);
-IAsyncEnumerable<StockQuote> WatchAsync(IEnumerable<string> symbols, TimeSpan? interval = null, CancellationToken ct = default);
-```
+- 選項一律是可省略的選項物件（`QuoteOptions`：`Default` / `NoCache`；`StockListOptions`：`Default` / `WithWarrants`，
+  另可指定清單上游 `Source`），而不是 `bool` 旗標參數：新增選項只要加屬性，不必再加多載。
+- 選項物件放在 `CancellationToken` 前面，只想傳 token 時要寫具名引數；`StockMarketServiceExtensions` 為常用查詢補上
+  「只傳 token」的擴充多載，介面實作者不必實作它們。
 
 設計取捨見 [10. 成交價追蹤](#10-成交價追蹤watchasync) 與 [10.1 批次報價與自動判斷市場](#101-批次報價與自動判斷市場)。
 
@@ -182,34 +167,32 @@ public interface IStockDataSource
 {
     MarketType Market { get; }
     Task<StockQuote?> FetchRealtimeQuoteAsync(string symbol, QuoteOptions options, CancellationToken ct = default);
-    // 3.1：預設實作逐檔呼叫 FetchRealtimeQuoteAsync，既有的第三方來源不必修改；內建來源覆寫為每 50 檔一個 MIS 請求
+    // 預設實作逐檔呼叫 FetchRealtimeQuoteAsync，自訂來源可以不實作；內建來源覆寫為每 50 檔一個 MIS 請求
     Task<IReadOnlyDictionary<string, StockQuote>> FetchRealtimeQuotesAsync(
         IReadOnlyList<string> symbols, QuoteOptions options, CancellationToken ct = default) { /* 逐檔 */ }
     Task<IReadOnlyList<StockHistory>> FetchHistoricalDataAsync(string symbol, DateOnly from, DateOnly to, CancellationToken ct = default);
-    Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(bool includeWarrant = false, CancellationToken ct = default);
-    // 3.1：預設實作轉呼叫 bool 多載、不理會 Source，既有的第三方來源不必修改；StockMarketService 一律呼叫這個多載
-    Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(StockListOptions options, CancellationToken ct = default)
-        => FetchStockListAsync(options.IncludeWarrant, ct);
+    // 只有單一清單上游的來源可以不理會 options.Source
+    Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(StockListOptions options, CancellationToken ct = default);
 }
 
 public interface ICacheService
 {
-    Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry);
-    Task<T> RefreshAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry);   // 一律重新取得並覆寫
-
-    // 3.1 起：factory 收到共用載入的 token，實作可合併同一 key 的並行未命中；預設實作直接呼叫上面的多載
-    Task<T> GetOrSetAsync<T>(string key, Func<CancellationToken, Task<T>> factory, TimeSpan expiry, CancellationToken ct)
-        => GetOrSetAsync(key, () => factory(ct), expiry);
+    // 有就用，沒有就載入並快取（實作可合併同一 key 同時發生的未命中，factory 收到的是共用載入的 token）
+    Task<T> GetOrSetAsync<T>(string key, Func<CancellationToken, Task<T>> factory, TimeSpan expiry, CancellationToken ct = default);
+    // 一律重新載入並覆寫；結果為 null 時保留舊值
+    Task<T> RefreshAsync<T>(string key, Func<CancellationToken, Task<T>> factory, TimeSpan expiry, CancellationToken ct = default);
+    // 只查不載入：批次報價先挑出已快取的代號，其餘合併成一次上游查詢
+    bool TryGetValue<T>(string key, out T value);
 }
 ```
 
-`ICacheService` 以兩個意圖明確的方法取代「`bypassCache` 布林參數」：呼叫端一看就知道是「有就用」還是「強制更新」。
+- `ICacheService` 以意圖明確的方法取代「`bypassCache` 布林參數」：呼叫端一看就知道是「有就用」、「強制更新」還是「只查不載入」。
+- `TryGetValue` 不能用「回傳 `null` 的 `GetOrSetAsync`」代替：那會加入或發起合併的載入，同一時間的單檔查詢可能加入這次
+  回傳 `null` 的載入，被誤判為查無資料。
+- 選清單上游是內建來源才有的能力（證交所家族有 OpenAPI 與 ISIN 兩種），但選項得一路傳到資料來源，所以
+  `IStockDataSource.FetchStockListAsync` 直接收 `StockListOptions`。
 
-選清單上游是內建來源才有的能力（證交所家族有 OpenAPI 與 ISIN 兩種），但選項得一路傳到資料來源，
-所以 `IStockDataSource` 也加了 `StockListOptions` 多載；以預設介面實作轉呼叫原本的 `bool` 多載，第三方來源照常編譯、
-行為不變（忽略 `Source`）。`IStockMarketService` 的新多載則照 3.1 其他新成員的做法直接加在介面上。
-
-設定與 HTTP 管線的擴充點（3.1 起，位於 `TWStockLib` 套件）：
+設定與 HTTP 管線的擴充點（位於 `TWStockLib` 套件）：
 
 ```csharp
 services.AddTwStock(options => { ... });                    // TwStockOptions：快取時間、RateLimit
@@ -217,7 +200,7 @@ services.AddHttpClient(TwStockOptions.HttpClientName)        // 同一個具名 
     .AddStandardResilienceHandler();                         // 重試等韌性由應用層自行決定要不要加
 ```
 
-- `AddTwStock()` 保留原本的無參數多載，另加 `AddTwStock(Action<TwStockOptions>)`，不改變既有方法簽章（二進位相容）。
+- `AddTwStock()` 不帶設定時全部使用預設值；`AddTwStock(Action<TwStockOptions>)` 可重複呼叫，依序套用。
 - 只公開設定與 client 名稱；限流器、handler 都是 internal，換實作不影響使用者。
 
 ---
@@ -248,7 +231,7 @@ public sealed class StockResult<T>
 - **呼叫端取消**：照 .NET 慣例拋出 `OperationCanceledException`。
 - **呼叫端程式錯誤**（空白或格式不合法的代號、起日晚於迄日、過短的追蹤間隔、同一代號指定兩個市場）：在呼叫當下拋出 `ArgumentException`。
 
-代號格式（3.1 起）：只接受 1 到 10 個 ASCII 英文字母或數字。代號會組進上游 URL，MIS 又以「|」分隔多檔，
+代號格式：只接受 1 到 10 個 ASCII 英文字母或數字。代號會組進上游 URL，MIS 又以「|」分隔多檔，
 放行任意字元等於讓輸入改寫查詢（`2330.tw|tse_2317` 會多查一檔）。資料來源另以 `Uri.EscapeDataString` 跳脫代號，
 讓「&」「#」改不了其他查詢參數；但 MIS 會先解碼再分隔，實測 `%7C` 一樣被當成分隔符號，所以真正擋下「|」的是格式檢查。
 
@@ -305,11 +288,11 @@ public static IServiceCollection AddTwStock(this IServiceCollection services)
 - 解析一律使用 `InvariantCulture`；上櫃的「仟股 / 仟元」在解析時換算成與上市一致的「股 / 元」；
   格式不符的列直接略過，不以預設值捏造資料。
 - 測試把證交所 / 櫃買的真實回應存成 fixture 字串，餵進 Parser 斷言輸出，**不需要網路、穩定、快**。
-- MIS 報價（3.1 起）：`ParseRealtimeQuotes` 解析 `msgArray` 的每一筆，略過代號（`c`）為空的佔位資料
+- MIS 報價：`ParseRealtimeQuotes` 解析 `msgArray` 的每一筆，略過代號（`c`）為空的佔位資料
   （查無代號、市場錯誤都是這筆）；`rtcode` 不是 `0000` 時拋出 `HttpRequestException`（`UPSTREAM_ERROR`），
   例如一次查太多檔時的 9999「參數不足」——此時沒有 `msgArray`，不能當成每一檔都查無資料。
 
-### HttpClient 管線與限流（3.1 起）
+### HttpClient 管線與限流
 
 `TwseHttpFetcher` 以具名 client（`TwStockOptions.HttpClientName`）送出請求，管線由外而內：
 
@@ -342,13 +325,13 @@ public static IServiceCollection AddTwStock(this IServiceCollection services)
   不必像 2.3 那樣每次回傳都做複本。
 - 自訂 `IStockDataSource` 的實作者也應回傳不可變集合（介面文件已註明）。
 - 快取時間：即時報價 30 秒；股票清單與已結束月份的歷史 1 天；當月（以台灣時間判斷）與未來月份的歷史 30 分鐘。
-  3.1 起可由 `TwStockOptions` 覆寫，預設值不變；不合法的值（0 或負）在第一次取得服務時以 `OptionsValidationException` 回報。
+  可由 `TwStockOptions` 覆寫，預設值不變；不合法的值（0 或負）在第一次取得服務時以 `OptionsValidationException` 回報。
 
-### 股票清單：預設 OpenAPI，可選 ISIN（3.1 起）
+### 股票清單：預設 OpenAPI，可選 ISIN
 
 3.0 的清單來自 ISIN 證券編碼頁：每個市場一頁 Big5 網頁（上市約 9.7 MB、上櫃約 3.2 MB），上游不壓縮、傳得慢且不穩定
 （2026/10 實測上市 5～78 秒、上櫃 2～24 秒），AngleSharp 解析上市頁還要 1.3～2.4 秒、配置約 300 MB。
-不指定市場的查詢（§10.1）第一次呼叫就得等這一頁。3.1 起清單有兩種上游，以 `StockListOptions.Source` 選擇：
+不指定市場的查詢（§10.1）第一次呼叫就得等這一頁。清單有兩種上游，以 `StockListOptions.Source` 選擇：
 
 | | `OpenApi`（預設） | `Isin` |
 |---|---|---|
@@ -360,9 +343,9 @@ public static IServiceCollection AddTwStock(this IServiceCollection services)
 - **預設選 OpenAPI**：這個函式庫的清單主要用來查代號名稱、判斷市場，速度比少數證券的完整性重要。
   OpenAPI 只列有行情資料的證券，少了停止交易中、尚未掛牌的證券與資產基礎證券（2026/10/22 共 12 檔）；
   上市清單收盤後才更新，新掛牌的證券晚一個交易日出現。需要這些時呼叫端改用 `Isin`，由呼叫端決定，函式庫不自動切換。
-- **ISIN 專屬欄位已移除**：3.1 開發期間曾在 `StockData` 加上 `SecurityType`、`Industry`、`Isin`、`ListedDate`、`CfiCode`
+- **ISIN 專屬欄位已移除**：3.0 開發期間曾在 `StockData` 加上 `SecurityType`、`Industry`、`Isin`、`ListedDate`、`CfiCode`
   （都來自 ISIN 頁），以及依證券類型過濾的擴充方法。預設上游改成 OpenAPI 後這些欄位填不出來，只有一種上游會填的欄位比沒有更糟，
-  在 3.1 發佈前拿掉。
+  在 3.0 發佈前拿掉。
 - **權證依代號判斷**：上市權證 6 碼且 03～08 開頭、上櫃權證 6 碼且 7 開頭（認購、認售與牛熊證都在內）。
   2026/10/22 以 ISIN 頁的 CFICode（`RW` 開頭即權證）核對兩個市場共 53,863 檔，結果完全一致；兩種上游用同一套規則。
 - **權證另外下載**：OpenAPI 的權證與其他證券分屬不同端點，上市權證清單比其他清單大得多，只在要求含權證時下載。
@@ -374,17 +357,18 @@ public static IServiceCollection AddTwStock(this IServiceCollection services)
 - OpenAPI 回應是空陣列或不是陣列時拋出 `FormatException`（`PARSE_ERROR`）：清單快取一整天，不能把一次異常的空回應當成「沒有任何股票」。
 - 具名 HttpClient 的預設 primary handler 開啟 `AutomaticDecompression`：OpenAPI 以 brotli 壓縮，上市權證清單差了 25 倍。
 
-### 合併同時發生的未命中（single-flight，3.1 起）
+### 合併同時發生的未命中（single-flight）
 
 快取只能擋住「之後」的查詢：程式啟動時十個請求同時查清單，十個都未命中，各自下載同一頁。
-`MemoryCacheService` 以帶 token 的 `GetOrSetAsync` 合併同一個 key 的並行未命中：
+`MemoryCacheService.GetOrSetAsync` 合併同一個 key 的並行未命中：
 
 - 第一個未命中的呼叫開始載入，之後的呼叫加入等候；結果寫入快取後才從「進行中」移除，之後的呼叫一定命中快取或開始新的載入。
 - factory 收到的是**這次載入自己的 token**，不是某個呼叫端的：第一個呼叫端取消時只有它自己離開，其他人的下載不受影響；
-  所有等候者都離開時才取消上游請求。原本的 `GetOrSetAsync(key, Func<Task<T>>)` 讓 factory 捕捉呼叫端的 token，
-  合併後會讓一個人的取消變成所有人的失敗，因此維持不合併。
+  所有等候者都離開時才取消上游請求。因此 `ICacheService` 的 factory 一律收 token、由快取決定傳哪一個：
+  若讓 factory 捕捉呼叫端的 token，合併後一個人的取消會變成所有人的失敗。
 - 例外與 `null` 交給這次的所有等候者，但都不快取：下一個呼叫重新查詢，與單一呼叫時的語意相同。
 - `RefreshAsync`（`QuoteOptions.NoCache`）不參與合併：它的語意就是「一律向上游查詢」，`null` 照舊不覆寫快取。
+- 批次報價以 `TryGetValue` 挑出已快取的代號，不加入也不發起載入；其餘合併成一次 MIS 請求，查到的再逐檔寫回快取。
 - 合併放在快取而不是資料來源：報價、歷史、清單同一套機制，資料來源只要把 token 傳給 Fetcher。
 
 ---
@@ -404,7 +388,7 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 - 輪詢間隔走 `TimeProvider`，測試以 `FakeTimeProvider` 推進時間，不必真的等待。
 - 服務本身因此不再有任何狀態。
 
-多檔追蹤（3.1 起）`WatchAsync(IEnumerable<(Symbol, Market)>)`：每檔各開一個 `WatchAsync` 時，每檔每輪一個請求，
+多檔追蹤 `WatchAsync(IEnumerable<(Symbol, Market)>)`：每檔各開一個 `WatchAsync` 時，每檔每輪一個請求，
 受每主機 3 個 / 5 秒的限流，10 檔一輪要約 15 秒。多檔多載每一輪以批次報價一次查完，同一市場每 50 檔一個請求。
 
 - 每一檔第一次查到時回傳一次，之後只回傳變動的那幾檔；同一輪內依傳入順序，型別仍是 `StockQuote`（`Symbol` 已足以分辨）。
@@ -426,7 +410,7 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 - 上游失敗時，同一市場這次查詢的每一檔共用同一個失敗結果：資料來源的批次方法是全有或全無的
   （內建來源某一塊失敗就整批拋出），不在介面上暴露分塊細節。成功的塊已寫入快取，重試時不會重查。
 
-**資料來源**：`IStockDataSource.FetchRealtimeQuotesAsync` 以預設介面實作逐檔呼叫單檔方法，第三方來源照常編譯、行為正確，
+**資料來源**：`IStockDataSource.FetchRealtimeQuotesAsync` 有預設實作，逐檔呼叫單檔方法，自訂來源不必實作、行為正確，
 只是沒有省下請求。內建來源覆寫：
 
 - 每 50 檔一個 MIS 請求（`ex_ch` 以「|」串接，上游依序每檔回一筆）。實測（2026-10）150 檔（URL 約 1.9 KB）可以、
@@ -462,7 +446,7 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 | **Parameter Object** | `QuoteOptions` | 取代布林旗標參數，新增選項不必增加多載 |
 | **Async Stream** | `WatchAsync` | 以 `await foreach` 取代有狀態的 Observer |
 | **Cache-Aside** | `ICacheService.GetOrSetAsync` / `RefreshAsync` | 減少對證交所的重複請求 |
-| **Single-flight** | `MemoryCacheService`（帶 token 的 `GetOrSetAsync`） | 同一 key 的並行未命中只查一次上游 |
+| **Single-flight** | `MemoryCacheService.GetOrSetAsync` | 同一 key 的並行未命中只查一次上游 |
 | **Options Pattern** | `TwStockOptions` + `IValidateOptions` | 機制參數集中、有預設值、可覆寫並在啟動時驗證 |
 | **Chain of Responsibility** | `RateLimitingHandler`（`DelegatingHandler`） | 限流、重試等橫切關注點掛在 HttpClient 管線，Fetcher 不必知道 |
 | **DI Extension** | `AddTwStock()` | 一行接好所有相依 |
@@ -495,9 +479,11 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 | 命名空間分散 | `Models` / `Services` / `Observer` / `Cache` | `TWStockLib` + `TWStockLib.Abstractions`；DI 擴充放 `Microsoft.Extensions.DependencyInjection` |
 | `default(MarketType)` 是上櫃 | `OTC = 0` | `Unknown = 0` |
 
-### 3.0 → 3.1（不破壞相容）
+### 3.0 開發後期的補強
 
-| 議題（3.0） | 舊做法 | 3.1 |
+3.0 的 API 整理完成後、發佈前，又補上了下列韌性與效能改善，一併在 3.0.0 發佈：
+
+| 議題 | 初版做法 | 3.0.0 |
 |---|---|---|
 | 快取時間寫死 | `TwseFamilyDataSourceBase` 內的常數 | `TwStockOptions`，預設值不變 |
 | 未命名 HttpClient | 預設逾時、無 User-Agent、無法單獨設定 | 具名 client `TwStockOptions.HttpClientName`，明確逾時與 User-Agent |
@@ -520,7 +506,7 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 | 功能 | 層級 | 理由 |
 |------|------|------|
 | Big5 解碼、URL 組裝、JSON/HTML 解析、單位換算 | **Library** | 與資料來源協定有關 |
-| 快取 TTL、限流頻率 | **Library 給預設值，應用層可經 `TwStockOptions` 覆寫**（3.1 起） | 機制面，保護上游不被打爆；預設值放在函式庫，特殊環境（共用 IP、自建代理）再調整 |
+| 快取 TTL、限流頻率 | **Library 給預設值，應用層可經 `TwStockOptions` 覆寫** | 機制面，保護上游不被打爆；預設值放在函式庫，特殊環境（共用 IP、自建代理）再調整 |
 | 追蹤的最短間隔 | **Library**（寫死 5 秒） | 對齊 MIS 的更新頻率，再短也拿不到新資料 |
 | 重試、斷路器、逾時策略 | **Application**（經 `TwStockOptions.HttpClientName` 加在 HttpClient 上） | 取捨因部署環境而異；函式庫不強迫相依 Polly |
 | 要追蹤哪些股票代碼 | **Application** | 業務決策 |

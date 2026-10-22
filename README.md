@@ -100,7 +100,7 @@ if (all.IsSuccess)
     Console.WriteLine($"共 {all.Value.Count} 支股票");
 
 var tse = await stock.GetStockListAsync(MarketType.TSE);
-var otcWithWarrants = await stock.GetStockListAsync(MarketType.OTC, includeWarrant: true);
+var otcWithWarrants = await stock.GetStockListAsync(MarketType.OTC, StockListOptions.WithWarrants);
 
 // 需要最完整的清單（含停止交易中、即將掛牌的證券）時改用 ISIN 頁面，比較慢
 var complete = await stock.GetAllStockListAsync(new StockListOptions { Source = StockListSource.Isin });
@@ -308,12 +308,13 @@ services.AddHttpClient(TwStockOptions.HttpClientName)
   ```
 
   批次報價用的 `FetchRealtimeQuotesAsync` 有預設實作（逐檔呼叫 `FetchRealtimeQuoteAsync`），不必實作；
-  上游支援一次查多檔時再覆寫，以減少請求數。`FetchStockListAsync(StockListOptions)` 也有預設實作（轉呼叫
-  `bool` 多載、不理會 `Source`），只有一個清單上游的來源不必實作。
+  上游支援一次查多檔時再覆寫，以減少請求數。`FetchStockListAsync(StockListOptions)` 要處理 `IncludeWarrant`；
+  只有一個清單上游的來源可以不理會 `Source`。
 
-- **替換快取**：在 `AddTwStock()` 之前註冊自己的 `ICacheService`，會保留你的實作。
-  帶 `CancellationToken` 的 `GetOrSetAsync` 多載有預設實作，可以不實作；內建的 `MemoryCacheService` 用它把
-  同一個 key 同時發生的未命中合併成一次上游請求，自訂快取若要同樣的效果再自行實作。
+- **替換快取**：在 `AddTwStock()` 之前註冊自己的 `ICacheService`，會保留你的實作。介面有三個方法：
+  `GetOrSetAsync`（有就用，沒有就載入並快取）、`RefreshAsync`（一律重新載入並覆寫）、`TryGetValue`（只查不載入）；
+  `null` 代表查無資料，不要快取。內建的 `MemoryCacheService` 會把同一個 key 同時發生的未命中合併成一次上游請求，
+  自訂快取若要同樣的效果再自行實作。
 
 ## 錯誤碼
 
@@ -346,7 +347,7 @@ services.AddHttpClient(TwStockOptions.HttpClientName)
 
 | 版本 | 變更 |
 |------|------|
-| 3.0.0 | 破壞性變更：不可變 record 模型、`DateOnly`、`QuoteOptions`、以 `WatchAsync` 取代觀察者、命名空間整併、實作類別改為 internal（見下方升級說明） |
+| 3.0.0 | 破壞性變更：不可變 record 模型、`DateOnly`、`QuoteOptions` / `StockListOptions`、以 `WatchAsync` 取代觀察者、命名空間整併、實作類別改為 internal（見下方升級說明）。新功能：一次查多檔報價與多檔追蹤、不指定市場自動判斷上市或上櫃、股票清單預設改用 OpenAPI（可選 ISIN）、每主機限流、`TwStockOptions` 可調整快取時間與限流、具名 HttpClient 可自行加上重試、同時發生的相同查詢只向上游要一次、代號格式檢查 |
 | 2.3.1 | 查無代號、或代號不屬於指定的市場（例如以 `MarketType.OTC` 查 2330）時，即時報價改回 `NOT_FOUND`；先前回傳欄位全空的成功結果 |
 | 2.3.0 | 修正多項資料與行為錯誤：上櫃歷史單位、牛熊證過濾、語系相依的解析、取消與逾時、價格訂閱的執行緒安全與生命週期等；AngleSharp 最低版本升至 1.5.0（修補 GHSA-pgww-w46g-26qg） |
 | 2.2.1 | 套件內 DLL 的組件版本改為與套件版本一致（2.2.0 的 DLL 仍標示為 2.1.1），功能與 2.2.0 相同 |
@@ -365,6 +366,8 @@ services.AddHttpClient(TwStockOptions.HttpClientName)
 | `AddStockServices()` | `AddTwStock()` |
 | `GetHistoricalDataAsync(symbol, DateTime start, DateTime end, market)` | `GetHistoricalDataAsync(symbol, market, DateOnly from, DateOnly to)` |
 | `GetRealtimeQuoteAsync(symbol, market, bypassCache: true)` | `GetRealtimeQuoteAsync(symbol, market, QuoteOptions.NoCache)` |
+| `GetStockListAsync(market, includeWarrant: true)` / `GetAllStockListAsync(includeWarrant: true)` | `GetStockListAsync(market, StockListOptions.WithWarrants)` / `GetAllStockListAsync(StockListOptions.WithWarrants)` |
+| 股票清單來自 ISIN 證券編碼頁 | 預設改用 OpenAPI（快很多，少數停止交易中、尚未掛牌的證券不在其中）；要最完整的清單用 `new StockListOptions { Source = StockListSource.Isin }` |
 | `SubscribePriceChanges` / `IStockPriceObserver` / `ConsoleStockPriceObserver` | `await foreach (var q in stock.WatchAsync(symbol, market, ct: ct))` |
 | `result.Value!` | 檢查 `IsSuccess` 後直接用 `result.Value`，或 `TryGetValue` / `GetValueOrThrow` |
 | `StockQuote.Top5SellPrice` / `Top5SellVolume` / `Top5BuyPrice` / `Top5BuyVolume` | `StockQuote.Asks` / `Bids`（`PriceLevel(Price, Volume)`） |
@@ -384,8 +387,9 @@ services.AddHttpClient(TwStockOptions.HttpClientName)
 自訂 `IStockDataSource` / `ICacheService` 的實作者另需注意：
 
 - `IStockDataSource.FetchRealtimeQuoteAsync` 改為 `(symbol, QuoteOptions options, ct)`，請遵守 `options.BypassCache`；
-  `FetchHistoricalDataAsync` 改為 `(symbol, DateOnly from, DateOnly to, ct)`；回傳的集合請用不可變集合。
-- `ICacheService` 改為 `GetOrSetAsync(key, factory, expiry)` 與 `RefreshAsync(key, factory, expiry)` 兩個方法，`expiry` 必填。
+  `FetchHistoricalDataAsync` 改為 `(symbol, DateOnly from, DateOnly to, ct)`；`FetchStockListAsync(bool includeWarrant, ct)`
+  改為 `FetchStockListAsync(StockListOptions options, ct)`；回傳的集合請用不可變集合。
+- `ICacheService` 改為 `GetOrSetAsync`、`RefreshAsync`（`factory` 會收到 `CancellationToken`，`expiry` 必填）與 `TryGetValue` 三個方法。
 - 原本公開的 `TwseStockDataSource`、`TpexStockDataSource`、`TwseFamilyDataSourceBase`、`IStockParser`、
   `TwseStockParser`、`IStockHttpFetcher`、`TwseHttpFetcher` 改為 internal，請改用 `AddTwStock()` 取得內建來源。
 - `TWStockLib.Cache` 命名空間移除，`ICacheService` / `MemoryCacheService` 移到 `TWStockLib.Abstractions`。

@@ -17,12 +17,12 @@ internal sealed class TpexStockDataSource(
 
     protected override Task<IReadOnlyList<StockHistory>> FetchMonthAsync(
         string symbol, DateOnly month, CancellationToken ct)
-        => CachedMonth(symbol, month, async () =>
+        => CachedMonth(symbol, month, async token =>
         {
             // 「/」在自訂格式中是文化相依的日期分隔符號，必須用 InvariantCulture 才保證是斜線
             var url = string.Create(CultureInfo.InvariantCulture,
                 $"https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock/st43_result.php?l=zh-tw&date={month:yyyy/MM/dd}&code={symbol}");
-            var json = await Fetcher.GetStringAsync(url, ct);
+            var json = await Fetcher.GetStringAsync(url, token);
             return TwseStockParser.ParseTpexHistory(json);
-        });
+        }, ct);
 }

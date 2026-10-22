@@ -46,17 +46,17 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
     public Task<StockQuote?> FetchRealtimeQuoteAsync(string symbol, QuoteOptions options, CancellationToken ct = default)
     {
         var cacheKey = $"realtime_quote_{Market}_{symbol}";
-        async Task<StockQuote?> Fetch()
+        async Task<StockQuote?> Fetch(CancellationToken token)
         {
             var exCh = $"{MarketKeyPrefix}_{symbol}.tw";
             var url = $"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={exCh}&json=1&delay=0&_={DateTime.UtcNow.Ticks}";
-            var json = await Fetcher.GetStringAsync(url, ct);
+            var json = await Fetcher.GetStringAsync(url, token);
             return TwseStockParser.ParseRealtimeQuote(json, Market);
         }
 
         return options.BypassCache
-            ? Cache.RefreshAsync(cacheKey, Fetch, _options.QuoteCacheDuration)
-            : Cache.GetOrSetAsync(cacheKey, Fetch, _options.QuoteCacheDuration);
+            ? Cache.RefreshAsync(cacheKey, () => Fetch(ct), _options.QuoteCacheDuration)
+            : Cache.GetOrSetAsync(cacheKey, Fetch, _options.QuoteCacheDuration, ct);
     }
 
     public async Task<IReadOnlyList<StockHistory>> FetchHistoricalDataAsync(
@@ -79,18 +79,18 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
 
     /// <summary>
     /// ISIN 頁面有數 MB，每個市場只下載、解析一次並快取完整清單（含權證）；
-    /// 是否排除權證在讀取時從同一份清單過濾，兩種查詢共用一次下載。
+    /// 是否排除權證在讀取時從同一份清單過濾，兩種查詢共用一次下載，同時發生的未命中也只下載一次。
     /// </summary>
     public async Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(
         bool includeWarrant = false, CancellationToken ct = default)
     {
         var cacheKey = $"stock_list_{Market}";
-        var all = await Cache.GetOrSetAsync(cacheKey, async () =>
+        var all = await Cache.GetOrSetAsync(cacheKey, async token =>
         {
             var url = $"https://isin.twse.com.tw/isin/C_public.jsp?strMode={IsinStrMode}";
-            var html = await Fetcher.GetBig5StringAsync(url, ct);
+            var html = await Fetcher.GetBig5StringAsync(url, token);
             return TwseStockParser.ParseStockList(html, Market);
-        }, _options.StockListCacheDuration);
+        }, _options.StockListCacheDuration, ct);
 
         return includeWarrant
             ? all
@@ -103,12 +103,15 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
     protected abstract Task<IReadOnlyList<StockHistory>> FetchMonthAsync(
         string symbol, DateOnly month, CancellationToken ct);
 
-    /// <summary>共用的單月快取包裝，子類別在 fetch 委派內組 URL 與解析。</summary>
+    /// <summary>
+    /// 共用的單月快取包裝，子類別在 fetch 委派內組 URL 與解析；委派收到的 token 是快取合併並行查詢後共用的，
+    /// 向上游查詢時要用它而不是呼叫端的 <paramref name="ct"/>。
+    /// </summary>
     protected Task<IReadOnlyList<StockHistory>> CachedMonth(
-        string symbol, DateOnly month, Func<Task<IReadOnlyList<StockHistory>>> fetch)
+        string symbol, DateOnly month, Func<CancellationToken, Task<IReadOnlyList<StockHistory>>> fetch, CancellationToken ct)
     {
         var cacheKey = string.Create(CultureInfo.InvariantCulture, $"history_{Market}_{symbol}_{month:yyyyMM}");
-        return Cache.GetOrSetAsync(cacheKey, fetch, HistoryTtl(month));
+        return Cache.GetOrSetAsync(cacheKey, fetch, HistoryTtl(month), ct);
     }
 
     /// <summary>

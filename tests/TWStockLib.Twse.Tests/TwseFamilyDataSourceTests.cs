@@ -184,6 +184,85 @@ public class TwseFamilyDataSourceTests
         Assert.All(otc.Values, s => Assert.Equal(MarketType.OTC, s.Market));
     }
 
+    // ── 同時發生的未命中只向上游查詢一次 ──────────────────────────────────────
+
+    /// <summary>每個請求都停在 <see cref="Release"/> 之前，模擬上游很慢（ISIN 上櫃頁實測約 24 秒）。</summary>
+    private sealed class SlowFetcher(string big5Response, string jsonResponse = "") : IStockHttpFetcher
+    {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _requests;
+
+        public int Requests => Volatile.Read(ref _requests);
+
+        public void Release() => _release.TrySetResult();
+
+        public async Task<string> GetStringAsync(string url, CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref _requests);
+            await _release.Task.WaitAsync(ct);
+            return jsonResponse;
+        }
+
+        public async Task<string> GetBig5StringAsync(string url, CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref _requests);
+            await _release.Task.WaitAsync(ct);
+            return big5Response;
+        }
+    }
+
+    [Fact]
+    public async Task FetchStockListAsync_TenParallelFirstCalls_DownloadThePageOnce()
+    {
+        var fetcher = new SlowFetcher(IsinFixtures.Tse);
+        var source = new TwseStockDataSource(fetcher, NewCache(), TimeProvider.System);
+
+        var callers = Enumerable.Range(0, 10)
+            .Select(i => Task.Run(() => source.FetchStockListAsync(includeWarrant: i % 2 == 0)))
+            .ToArray();
+        while (fetcher.Requests == 0)
+            await Task.Delay(10);
+        await Task.Delay(100); // 讓其餘呼叫都進到快取
+        fetcher.Release();
+        var lists = await Task.WhenAll(callers);
+
+        Assert.Equal(1, fetcher.Requests);
+        Assert.All(lists.Where((_, i) => i % 2 == 0), l => Assert.Equal(15, l.Count));
+        Assert.All(lists.Where((_, i) => i % 2 == 1), l => Assert.Equal(11, l.Count));
+    }
+
+    [Fact]
+    public async Task FetchStockListAsync_TheFirstCallerGivingUp_DoesNotAbortTheDownloadForTheOthers()
+    {
+        var fetcher = new SlowFetcher(IsinFixtures.Tse);
+        var source = new TwseStockDataSource(fetcher, NewCache(), TimeProvider.System);
+        using var impatient = new CancellationTokenSource();
+
+        var first = source.FetchStockListAsync(ct: impatient.Token);
+        var second = source.FetchStockListAsync();
+        impatient.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+        fetcher.Release();
+
+        Assert.Equal(11, (await second).Count);
+        Assert.Equal(1, fetcher.Requests);
+    }
+
+    [Fact]
+    public async Task FetchRealtimeQuoteAsync_ParallelFirstCalls_ShareOneRequest_ButNoCacheDoesNot()
+    {
+        var fetcher = new SlowFetcher("", Json("600.00"));
+        var source = new TwseStockDataSource(fetcher, NewCache(), TimeProvider.System);
+
+        var cached = Enumerable.Range(0, 5).Select(_ => source.FetchRealtimeQuoteAsync("2330", QuoteOptions.Default)).ToArray();
+        var fresh = source.FetchRealtimeQuoteAsync("2330", QuoteOptions.NoCache);
+        fetcher.Release();
+        var quotes = await Task.WhenAll([.. cached, fresh]);
+
+        Assert.Equal(2, fetcher.Requests);
+        Assert.All(quotes, q => Assert.Equal(600.00m, q!.LastPrice));
+    }
+
     // ── 歷史資料的快取時間 ────────────────────────────────────────────────────
 
     private sealed class RecordingCache : ICacheService

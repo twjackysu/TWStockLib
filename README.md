@@ -192,7 +192,8 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 
 | 版本 | 變更 |
 |------|------|
-| 3.0.0 | 破壞性變更：不可變 record 模型、`DateOnly`、`QuoteOptions`、以 `WatchAsync` 取代觀察者、命名空間整併、實作類別改為 internal；修正查無代號時回傳空報價（見下方升級說明） |
+| 3.0.0 | 破壞性變更：不可變 record 模型、`DateOnly`、`QuoteOptions`、以 `WatchAsync` 取代觀察者、命名空間整併、實作類別改為 internal（見下方升級說明） |
+| 2.3.1 | 查無代號、或代號不屬於指定的市場（例如以 `MarketType.OTC` 查 2330）時，即時報價改回 `NOT_FOUND`；先前回傳欄位全空的成功結果 |
 | 2.3.0 | 修正多項資料與行為錯誤：上櫃歷史單位、牛熊證過濾、語系相依的解析、取消與逾時、價格訂閱的執行緒安全與生命週期等；AngleSharp 最低版本升至 1.5.0（修補 GHSA-pgww-w46g-26qg） |
 | 2.2.1 | 套件內 DLL 的組件版本改為與套件版本一致（2.2.0 的 DLL 仍標示為 2.1.1），功能與 2.2.0 相同 |
 | 2.2.0 | 即時報價新增 `bypassCache` 參數，可略過內部 30 秒快取；新增成員皆有預設介面實作，既有實作不需修改 |
@@ -224,7 +225,7 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 | `MarketType`：`OTC = 0`、`TSE = 1` | `Unknown = 0`、`TSE = 1`、`OTC = 2`（若曾以整數保存，請轉換） |
 | 上游格式無法解析時回 `UPSTREAM_ERROR` | `PARSE_ERROR` |
 | 空白代號、起日晚於迄日照樣查詢 | 拋出 `ArgumentException` |
-| 查無代號時回傳欄位全空的報價 | `NOT_FOUND` |
+| 查無代號時回傳欄位全空的報價（2.3.0 以前；2.3.1 已修正） | `NOT_FOUND` |
 
 自訂 `IStockDataSource` / `ICacheService` 的實作者另需注意：
 

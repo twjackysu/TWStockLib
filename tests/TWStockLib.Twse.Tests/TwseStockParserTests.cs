@@ -43,6 +43,15 @@ public class TwseStockParserTests
     }
 
     [Fact]
+    public void ParseRealtimeQuote_UnknownSymbolOrWrongMarket_ReturnsNull()
+    {
+        // MIS 對查無代號（tse_ZZZZ）與市場錯誤（otc_2330）都回這筆佔位資料（實際回應節錄）
+        var json = """{"msgArray":[{"tv":"-","s":"-","c":"","z":"-"}],"rtcode":"0000","rtmessage":"OK"}""";
+
+        Assert.Null(_parser.ParseRealtimeQuote(json, MarketType.OTC));
+    }
+
+    [Fact]
     public void ParseRealtimeQuote_DashValues_BecomeNull()
     {
         var json = """{"msgArray":[{"c":"2330","n":"台積電","z":"-","o":"-"}]}""";

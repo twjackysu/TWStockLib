@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Http;
 using Microsoft.Extensions.Options;
 using TWStockLib;
 using TWStockLib.Abstractions;
@@ -24,6 +25,7 @@ public static class TwStockServiceCollectionExtensions
         services.AddOptions<TwStockOptions>();
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<TwStockOptions>, TwStockOptionsValidator>());
 
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IConfigureOptions<HttpClientFactoryOptions>, TwStockHttpClientSetup>());
         services.TryAddSingleton<IStockHttpFetcher, TwseHttpFetcher>();
 
         // 每市場一個資料來源；新增市場只多註冊一行（OCP）

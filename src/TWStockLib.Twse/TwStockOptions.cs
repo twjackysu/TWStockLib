@@ -6,6 +6,13 @@ namespace TWStockLib;
 /// </summary>
 public sealed class TwStockOptions
 {
+    /// <summary>
+    /// 內建資料來源使用的具名 <see cref="HttpClient"/>。以 <c>services.AddHttpClient(TwStockOptions.HttpClientName)</c>
+    /// 取得同一個 <c>IHttpClientBuilder</c>，即可加上重試等韌性處理（例如 <c>AddStandardResilienceHandler()</c>）、
+    /// 調整逾時或設定 Proxy。預設逾時 100 秒，User-Agent 為 <c>TWStockLib/{版本}</c>。
+    /// </summary>
+    public const string HttpClientName = "TWStockLib";
+
     /// <summary>即時報價的快取時間，預設 30 秒。</summary>
     public TimeSpan QuoteCacheDuration { get; set; } = TimeSpan.FromSeconds(30);
 

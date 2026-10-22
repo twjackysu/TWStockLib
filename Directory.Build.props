@@ -9,6 +9,8 @@
 
   <!-- 共用的 NuGet 套件 metadata（僅 IsPackable 的專案會用到） -->
   <PropertyGroup>
+    <!-- 兩個套件一起發佈、版本一致，版號只在這裡改（發佈時 publish.yml 以 -p:Version 覆寫） -->
+    <Version>3.0.0</Version>
     <Authors>JackySu</Authors>
     <Company>JackySu</Company>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

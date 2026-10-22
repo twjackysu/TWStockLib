@@ -1,7 +1,7 @@
 # TWStockLib — 設計文件
 
-> 版本：v0.1 草稿
-> 目標：把 TWStockLib 從「單一專案、職責混雜」重構成**職責清楚、可測試、易擴充、可多框架發佈到 NuGet** 的類別庫。
+> 對應版本：3.0
+> 目標：**職責清楚、可測試、易擴充、可多框架發佈到 NuGet** 的類別庫。
 > 設計心法承襲 `DataAnalysisLibrary`，但**刻意不過度設計**——只引入對本 lib 真正有價值的抽象。
 
 ---
@@ -12,15 +12,16 @@
 2. [核心心法（從 DataAnalysisLibrary 借什麼、不借什麼）](#2-核心心法)
 3. [整體架構分層](#3-整體架構分層)
 4. [方案結構（Solution Structure）](#4-方案結構)
-5. [核心抽象層](#5-核心抽象層)
+5. [公開 API 與擴充點](#5-公開-api-與擴充點)
 6. [Result 模型（StockResult&lt;T&gt;）](#6-result-模型)
 7. [每市場一個 DataSource（OCP 擴充）](#7-每市場一個-datasource)
 8. [Parser / Fetcher 分離（可測試性）](#8-parser--fetcher-分離)
-9. [Observer 模式的定位](#9-observer-模式的定位)
-10. [設計模式總表](#10-設計模式總表)
-11. [與舊版的對比與改進點](#11-與舊版的對比與改進點)
-12. [Mechanism vs Policy — Library 與應用層的邊界](#12-mechanism-vs-policy)
-13. [刻意不做的事（避免過度設計）](#13-刻意不做的事)
+9. [不可變模型與快取](#9-不可變模型與快取)
+10. [成交價追蹤（WatchAsync）](#10-成交價追蹤watchasync)
+11. [設計模式總表](#11-設計模式總表)
+12. [演進紀錄](#12-演進紀錄)
+13. [Mechanism vs Policy — Library 與應用層的邊界](#13-mechanism-vs-policy)
+14. [刻意不做的事（避免過度設計）](#14-刻意不做的事)
 
 ---
 
@@ -29,11 +30,12 @@
 | 目標 | 說明 |
 |------|------|
 | **關注點分離** | 抓資料（IO）、解析（純字串→Model）、編排（Service）各自獨立 |
-| **低耦合、高內聚** | 新增一個市場（興櫃 / ETF / 期貨…）不需修改現有程式碼（OCP） |
+| **低耦合、高內聚** | 新增或替換一個市場的資料來源不需修改現有程式碼（OCP） |
 | **可測試性** | 解析邏輯不依賴網路，可餵固定 HTML/JSON fixture 單元測試 |
 | **全非同步 + 可取消** | 所有對外 IO 以 `async/await` 實作，並貫穿 `CancellationToken` |
-| **型別安全 + 可空標註** | `Nullable=enable`，回傳一致以 `StockResult<T>` 包裝 |
-| **可多框架發佈** | `net8.0;net9.0`，標準 NuGet metadata + SourceLink + symbols |
+| **型別安全 + 可空標註** | `Nullable=enable`，回傳一致以 `StockResult<T>` 包裝，並標註 `MemberNotNullWhen` |
+| **最小公開面** | 只公開使用者需要的型別與擴充點；實作細節一律 `internal`，每個公開型別都是 SemVer 承諾 |
+| **可多框架發佈** | `net8.0;net9.0;net10.0`，標準 NuGet metadata + SourceLink + symbols |
 
 ---
 
@@ -43,13 +45,13 @@ DataAnalysisLibrary 的精神只有兩條，套到本 lib：
 
 1. **純邏輯與 IO 分離**
    DataAnalysisLibrary：`IQueryBuilder`（純字串、可測） ↔ `IQueryExecutor`（碰 SDK / IO）。
-   TWStockLib 對應：`IStockParser`（HTML/JSON 字串 → Model，純函式） ↔ `IStockHttpFetcher`（只負責抓網頁）。
+   TWStockLib 對應：`TwseStockParser`（HTML/JSON 字串 → Model，純函式） ↔ `IStockHttpFetcher`（只負責抓網頁）。
 
 2. **每個來源一套實作、集合/字典註冊、OCP 擴充**
    DataAnalysisLibrary：`IDataSourceFactory` 用 `SourceKey` 路由，`AddSource()` 一行新增。
-   TWStockLib 對應：**每個市場一個 `IStockDataSource`**，以 `MarketType` 為 key 註冊進字典，`StockMarketService` 只認介面、不再寫 `if (TSE) … else (OTC)`。
+   TWStockLib 對應：**每個市場一個 `IStockDataSource`**，以 `MarketType` 為 key 註冊進字典，`StockMarketService` 只認介面、不寫 `if (TSE) … else (OTC)`。
 
-**不借**的部分（對本 lib 屬過度設計）：Bridge、QueryOrchestrator、Template-Method Strategy。本 lib 查詢維度固定（報價／歷史／清單），來源同屬證交所家族，這些抽象帶來的成本大於收益。
+**不借**的部分（對本 lib 屬過度設計）：Bridge、QueryOrchestrator、泛型 Template-Method Strategy。本 lib 查詢維度固定（報價／歷史／清單），來源同屬證交所家族，這些抽象帶來的成本大於收益。
 
 ---
 
@@ -59,26 +61,27 @@ DataAnalysisLibrary 的精神只有兩條，套到本 lib：
 ┌──────────────────────────────────────────────┐
 │            呼叫端（Console / Web API）          │
 └───────────────────────┬──────────────────────┘
-                        │ 只依賴 IStockMarketService
+                        │ 只依賴 IStockMarketService（TWStockLib）
 ┌───────────────────────▼──────────────────────┐
 │   StockMarketService  (Facade / 編排)          │
 │   GetRealtimeQuoteAsync / GetHistoricalAsync   │
-│   GetStockListAsync …  回傳 StockResult<T>      │
+│   GetStockListAsync / WatchAsync               │
+│   回傳 StockResult<T>                           │
 └───────────────────────┬──────────────────────┘
             │ 依 MarketType 取得
 ┌───────────▼──────────────────────────────────┐
 │   IReadOnlyDictionary<MarketType,             │
-│                       IStockDataSource>        │
+│                       IStockDataSource>        │  ← 唯一的公開擴充點
 ├───────────────┬───────────────────────────────┤
-│ TwseStockData │ TpexStockDataSource │ 未來市場 │
+│ TwseStockData │ TpexStockDataSource │ 自訂來源 │  ← 內建來源為 internal
 │ Source (TSE)  │ (OTC)               │  …       │
 └───────────────┴───────────────────────────────┘
-        │ 每個 DataSource 內部再分兩刀：
-   ┌────┴─────┐
-┌──▼────────┐ ┌▼─────────────────────────────┐
-│IStockParser│ │ IStockHttpFetcher            │
-│(純字串解析)│ │ (抓網頁 + Big5 編碼，碰 IO)   │
-└───────────┘ └──────────────────────────────┘
+        │ 每個內建 DataSource 內部再分兩刀：
+   ┌────┴─────────┐
+┌──▼────────────┐ ┌▼─────────────────────────────┐
+│TwseStockParser│ │ IStockHttpFetcher            │
+│(純函式解析)    │ │ (抓網頁 + Big5 編碼，碰 IO)   │
+└───────────────┘ └──────────────────────────────┘
 ```
 
 ---
@@ -87,54 +90,44 @@ DataAnalysisLibrary 的精神只有兩條，套到本 lib：
 
 ```
 TWStockLib.slnx
-├── Directory.Build.props                 ← 共用 metadata / 多框架 / Nullable / LangVersion
-├── README.md
-├── DESIGN.md / PLAN.md
+├── Directory.Build.props / .targets      ← 共用 metadata / Nullable / LangVersion / SourceLink
+├── README.md / DESIGN.md
 ├── src/
-│   ├── TWStockLib.Core/                   ← 零外部 SDK 依賴（只靠 BCL + Extensions 抽象）
-│   │   ├── Abstractions/
-│   │   │   ├── IStockMarketService.cs
-│   │   │   ├── IStockDataSource.cs
-│   │   │   ├── IStockParser.cs            （泛型：依輸出型別）
-│   │   │   ├── IStockHttpFetcher.cs
-│   │   │   └── ICacheService.cs
-│   │   ├── Models/
-│   │   │   ├── StockQuote.cs / StockHistory.cs / StockData.cs
-│   │   │   ├── MarketType.cs
-│   │   │   └── StockResult.cs             ← Result Pattern
-│   │   ├── Observer/  IStockPriceObserver, StockPriceSubject
-│   │   ├── Caching/   MemoryCacheService
-│   │   └── Services/  StockMarketService（只依賴抽象）
-│   └── TWStockLib.Twse/                    ← 證交所家族實作，依賴 AngleSharp
-│       ├── DataSources/
-│       │   ├── TwseStockDataSource.cs      (TSE)
-│       │   └── TpexStockDataSource.cs      (OTC，獨立！)
-│       ├── Parsers/
-│       │   ├── TwseQuoteParser.cs / TwseHistoryParser.cs / IsinStockListParser.cs
-│       ├── Http/      TwseHttpFetcher.cs
-│       ├── Internal/  TwseApiModels.cs（msgArray / TPEX table，internal）
-│       └── ServiceCollectionExtensions.cs  (AddTwStock)
+│   ├── TWStockLib.Core/                   ← 無第三方 SDK 依賴（只靠 BCL + Microsoft.Extensions）
+│   │   ├── IStockMarketService.cs / StockMarketService.cs / StockMarketServiceExtensions.cs
+│   │   ├── StockQuote.cs / StockHistory.cs / StockData.cs / PriceLevel.cs / MarketType.cs
+│   │   ├── QuoteOptions.cs
+│   │   ├── StockResult.cs                 ← Result Pattern + StockErrorCodes + StockQueryException
+│   │   └── Abstractions/                  ← 擴充點
+│   │       ├── IStockDataSource.cs
+│   │       ├── ICacheService.cs
+│   │       └── MemoryCacheService.cs
+│   └── TWStockLib.Twse/                    ← 證交所家族實作（全部 internal），依賴 AngleSharp
+│       ├── DataSources/  TwseFamilyDataSourceBase / TwseStockDataSource (TSE) / TpexStockDataSource (OTC)
+│       ├── Parsers/      TwseStockParser（static，純函式）
+│       ├── Http/         IStockHttpFetcher / TwseHttpFetcher
+│       └── TwStockServiceCollectionExtensions.cs  (AddTwStock，命名空間 Microsoft.Extensions.DependencyInjection)
 └── tests/
-    ├── TWStockLib.Core.Tests/             ← Service 路由、StockResult
-    └── TWStockLib.Twse.Tests/             ← Parser 餵 fixture 字串，離線
+    ├── TWStockLib.Core.Tests/             ← Service 路由、錯誤收斂、WatchAsync（FakeTimeProvider）、StockResult、快取
+    └── TWStockLib.Twse.Tests/             ← Parser 餵 fixture 字串（離線）、DataSource 快取行為、DI 註冊
 ```
 
-> **分包理由**：`Core` 完全無第三方 SDK 依賴，單元測試最乾淨；想換解析來源（例如改抓券商 API）只要新增一個 connector 套件，不動 Core。
+> **分包理由**：`Core` 沒有第三方 SDK 依賴，單元測試最乾淨；想換解析來源（例如改接券商 API）只要新增一個 connector 套件，不動 Core。
 
 ---
 
-## 5. 核心抽象層
+## 5. 公開 API 與擴充點
 
 ```csharp
-// 對外唯一入口（修掉舊版 README 寫了卻不存在的 IStockMarketService）
+namespace TWStockLib;
+
 public interface IStockMarketService
 {
     Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(
-        string symbol, MarketType market, CancellationToken ct = default);
+        string symbol, MarketType market, QuoteOptions? options = null, CancellationToken ct = default);
 
     Task<StockResult<IReadOnlyList<StockHistory>>> GetHistoricalDataAsync(
-        string symbol, DateTime startDate, DateTime endDate, MarketType market,
-        CancellationToken ct = default);
+        string symbol, MarketType market, DateOnly from, DateOnly to, CancellationToken ct = default);
 
     Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetStockListAsync(
         MarketType market, bool includeWarrant = false, CancellationToken ct = default);
@@ -142,36 +135,33 @@ public interface IStockMarketService
     Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetAllStockListAsync(
         bool includeWarrant = false, CancellationToken ct = default);
 
-    void SubscribePriceChanges(string symbol, IStockPriceObserver observer);
-    void UnsubscribePriceChanges(string symbol, IStockPriceObserver observer);
+    IAsyncEnumerable<StockQuote> WatchAsync(
+        string symbol, MarketType market, TimeSpan? interval = null, CancellationToken ct = default);
 }
+```
 
-// 每個市場一套實作
+- 只傳 `CancellationToken` 的報價查詢由 `StockMarketServiceExtensions` 提供，介面實作者只需實作一個方法。
+- 選項用 `QuoteOptions`（`Default` / `NoCache`）而非 `bool` 旗標參數：新增選項不必再加多載。
+
+擴充點集中在 `TWStockLib.Abstractions`：
+
+```csharp
 public interface IStockDataSource
 {
     MarketType Market { get; }
-    Task<StockQuote?> FetchRealtimeQuoteAsync(string symbol, CancellationToken ct = default);
-    Task<IReadOnlyList<StockHistory>> FetchHistoricalDataAsync(
-        string symbol, DateTime startDate, DateTime endDate, CancellationToken ct = default);
-    Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(
-        bool includeWarrant = false, CancellationToken ct = default);
+    Task<StockQuote?> FetchRealtimeQuoteAsync(string symbol, QuoteOptions options, CancellationToken ct = default);
+    Task<IReadOnlyList<StockHistory>> FetchHistoricalDataAsync(string symbol, DateOnly from, DateOnly to, CancellationToken ct = default);
+    Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(bool includeWarrant = false, CancellationToken ct = default);
 }
 
-// 純字串 → Model，不碰 IO，好單測
-public interface IStockParser
+public interface ICacheService
 {
-    StockQuote? ParseRealtimeQuote(string rawJson, MarketType market);
-    IReadOnlyList<StockHistory> ParseHistory(string rawJson, MarketType market);
-    IReadOnlyDictionary<string, StockData> ParseStockList(string rawBig5Html, MarketType market, bool includeWarrant);
-}
-
-// 只負責抓網頁（含 Big5 編碼處理），碰 IO
-public interface IStockHttpFetcher
-{
-    Task<string> GetStringAsync(string url, CancellationToken ct = default);
-    Task<string> GetBig5StringAsync(string url, CancellationToken ct = default);
+    Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry);
+    Task<T> RefreshAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry);   // 一律重新取得並覆寫
 }
 ```
+
+`ICacheService` 以兩個意圖明確的方法取代「`bypassCache` 布林參數」：呼叫端一看就知道是「有就用」還是「強制更新」。
 
 ---
 
@@ -180,39 +170,36 @@ public interface IStockHttpFetcher
 ```csharp
 public sealed class StockResult<T>
 {
-    public bool    IsSuccess    { get; private init; }
-    public T?      Value        { get; private init; }
-    public string? ErrorCode    { get; private init; }
-    public string? ErrorMessage { get; private init; }
+    [MemberNotNullWhen(true, nameof(Value))]
+    [MemberNotNullWhen(false, nameof(ErrorCode), nameof(ErrorMessage))]
+    public bool IsSuccess { get; }
+    public T? Value { get; }
+    public string? ErrorCode { get; }
+    public string? ErrorMessage { get; }
+    public Exception? Exception { get; }          // 保留原因，供記錄與診斷
 
-    public static StockResult<T> Ok(T value)
-        => new() { IsSuccess = true, Value = value };
-
-    public static StockResult<T> Fail(string code, string message)
-        => new() { IsSuccess = false, ErrorCode = code, ErrorMessage = message };
+    public bool TryGetValue(out T value);
+    public T GetValueOrThrow();                    // 失敗時拋出帶 ErrorCode 的 StockQueryException
 }
 ```
 
-常見錯誤碼：`SOURCE_NOT_FOUND`（不支援的市場）、`NOT_FOUND`（查無此股）、`UPSTREAM_ERROR`（證交所回非 OK / 連線失敗）、`PARSE_ERROR`（格式變動解析失敗）。
+錯誤碼（`StockErrorCodes`）：`SOURCE_NOT_FOUND`（不支援的市場）、`NOT_FOUND`（查無此股）、`UPSTREAM_ERROR`（連線 / 回應錯誤）、
+`TIMEOUT`（HttpClient 逾時）、`PARSE_ERROR`（回應格式無法解析）。
 
-> 採用理由：對齊 DataAnalysisLibrary 的 `QueryResult<T>`，呼叫端不用在每次呼叫包 try-catch，網路與格式錯誤都收斂成一致回傳。
+哪些情況**不**收斂成 Result：
+
+- **呼叫端取消**：照 .NET 慣例拋出 `OperationCanceledException`。
+- **呼叫端程式錯誤**（空白代號、起日晚於迄日、過短的追蹤間隔）：在呼叫當下拋出 `ArgumentException`。
+
+> 採用理由：對齊 DataAnalysisLibrary 的 `QueryResult<T>`，呼叫端不用在每次呼叫包 try-catch，網路與格式錯誤都收斂成一致回傳；
+> 但取消與參數錯誤屬於呼叫端自己的控制流程，維持 .NET 的例外慣例。
 
 ---
 
 ## 7. 每市場一個 DataSource
 
-舊版 `TwseDataFetchStrategy` 內部用 `if (marketType == TSE) … else …` 硬分支處理兩個市場，名為 Strategy 實為 god-class。新版每個市場各自獨立：
-
-```csharp
-public sealed class TpexStockDataSource : IStockDataSource
-{
-    public MarketType Market => MarketType.OTC;
-    private readonly IStockHttpFetcher _fetcher;
-    private readonly IStockParser _parser;
-    private readonly ICacheService _cache;
-    // 只關心 OTC 自己的 URL / 編碼 / 解析
-}
-```
+每個市場各自一個 `IStockDataSource`。證交所與櫃買的報價、清單流程相同，只差代碼前綴、ISIN strMode 與歷史端點，
+由 `TwseFamilyDataSourceBase` 以抽象成員提供（Template Method），子類別只關心自己的端點與解析。
 
 註冊（DI）：
 
@@ -221,85 +208,124 @@ public static IServiceCollection AddTwStock(this IServiceCollection services)
 {
     services.AddHttpClient();
     services.AddMemoryCache();
-    services.AddSingleton<ICacheService, MemoryCacheService>();
-    services.AddSingleton<IStockParser, TwseStockParser>();
-    services.AddSingleton<IStockHttpFetcher, TwseHttpFetcher>();
+    services.TryAddSingleton(TimeProvider.System);
+    services.TryAddSingleton<ICacheService, MemoryCacheService>();
+    services.TryAddSingleton<IStockHttpFetcher, TwseHttpFetcher>();
 
-    services.AddSingleton<IStockDataSource, TwseStockDataSource>();
-    services.AddSingleton<IStockDataSource, TpexStockDataSource>();   // ← 新增市場只多這一行
+    services.TryAddEnumerable(ServiceDescriptor.Singleton<IStockDataSource, TwseStockDataSource>());
+    services.TryAddEnumerable(ServiceDescriptor.Singleton<IStockDataSource, TpexStockDataSource>());   // ← 新增市場只多這一行
 
-    services.AddScoped<IStockMarketService, StockMarketService>();
+    services.TryAddSingleton<IStockMarketService, StockMarketService>();
     return services;
 }
 ```
 
-`StockMarketService` 建構時把 `IEnumerable<IStockDataSource>` 收成 `Dictionary<MarketType, …>`，查詢時依 `MarketType` 取用——**新增市場零修改現有程式碼（OCP）**。
+- 全部用 `TryAdd*`：可重複呼叫；使用者在之前註冊的相依（例如自己的 `ICacheService`）會被保留。
+- `StockMarketService` 把 `IEnumerable<IStockDataSource>` 收成 `Dictionary<MarketType, …>`，同一市場以**最後註冊**的為準，
+  因此使用者可以在 `AddTwStock()` 之後註冊自己的來源來取代內建來源。
+- 服務是 Singleton 且無狀態，可注入任何生命週期的元件。
 
 ---
 
 ## 8. Parser / Fetcher 分離
 
-舊版把「抓網頁」「Big5 解碼」「JSON / HTML 解析」「`GetDecimal/GetUInt32Array` 一堆 helper」全塞在一個檔案裡，無法離線測試。新版：
-
-- `IStockHttpFetcher` → 唯一碰 `HttpClient` 的地方，含 `Encoding.RegisterProvider` 與 Big5（CodePage 950）處理。
-- `IStockParser` → 純函式，吃字串吐 Model。原本的 `GetNullableDecimal / GetDecimalArray / GetUInt32Array` 等 helper 全部移進來，變成可單測對象。
-- 測試只要把證交所某次的真實 JSON/HTML 存成 fixture，餵進 Parser 斷言輸出，**不需要網路、穩定、快**。
-
----
-
-## 9. Observer 模式的定位
-
-保留 `IStockPriceObserver` / `StockPriceSubject`，但文件要誠實說明：目前是「呼叫 `GetRealtimeQuoteAsync` 時順帶比價通知」，屬 pull 觸發，非背景 push。若未來要真背景輪詢，再加一個 `IStockPriceMonitor`（背景 `HostedService`）即可，先不做（見第 13 節）。
+- `IStockHttpFetcher` → 唯一碰 `HttpClient` 的地方，含 `Encoding.RegisterProvider` 與 Big5（CodePage 950）處理；測試以假實作替換。
+- `TwseStockParser` → `internal static`，純函式，吃字串吐 Model。只有一個實作、方法又綁定 Twse / Tpex 端點，
+  因此不另外抽介面（3.0 移除了原本的 `IStockParser`）。
+- 解析一律使用 `InvariantCulture`；上櫃的「仟股 / 仟元」在解析時換算成與上市一致的「股 / 元」；
+  格式不符的列直接略過，不以預設值捏造資料。
+- 測試把證交所 / 櫃買的真實回應存成 fixture 字串，餵進 Parser 斷言輸出，**不需要網路、穩定、快**。
 
 ---
 
-## 10. 設計模式總表
+## 9. 不可變模型與快取
+
+- `StockQuote`、`StockHistory`、`StockData` 是 `sealed record`（init-only）；五檔報價是 `IReadOnlyList<PriceLevel>`。
+- Parser 回傳唯讀集合（`ReadOnlyCollection`、`FrozenDictionary`），同一個實例可以安全地放進快取、交給多個呼叫端，
+  不必像 2.3 那樣每次回傳都做複本。
+- 自訂 `IStockDataSource` 的實作者也應回傳不可變集合（介面文件已註明）。
+- 快取時間：即時報價 30 秒；股票清單與已結束月份的歷史 1 天；當月（以台灣時間判斷）與未來月份的歷史 30 分鐘。
+
+---
+
+## 10. 成交價追蹤（WatchAsync）
+
+2.x 的 `IStockPriceObserver` / `StockPriceSubject` 是「呼叫端自己查報價時順帶比價通知」：沒有人查就不會通知，
+服務還得保存訂閱狀態（因此曾踩到 Scoped 生命週期與執行緒安全的問題）。3.0 改為由呼叫端掌控的 `IAsyncEnumerable`：
+
+```csharp
+await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppingToken))
+    Console.WriteLine(quote.LastPrice);
+```
+
+- 先回傳目前報價，之後每隔 `interval`（預設與最短 5 秒，對齊 MIS 的更新頻率）以 `QuoteOptions.NoCache` 查詢，只在成交價變動時回傳。
+- 暫時失敗記錄後重試；`NOT_FOUND`（代號打錯）拋出 `StockQueryException` 結束；取消拋出 `OperationCanceledException`。
+- 輪詢間隔走 `TimeProvider`，測試以 `FakeTimeProvider` 推進時間，不必真的等待。
+- 服務本身因此不再有任何狀態。
+
+---
+
+## 11. 設計模式總表
 
 | 模式 | 用於 | 解決的問題 |
 |------|------|-----------|
-| **Facade** | `StockMarketService` | 隱藏市場選擇、快取、解析編排 |
-| **Strategy（每市場一實作）** | `IStockDataSource` | 不同市場可獨立演進，零修改新增來源（OCP） |
-| **Separation: Builder/Executor 類比** | `IStockParser` ↔ `IStockHttpFetcher` | 純解析與 IO 解耦，解析可單元測試 |
-| **Observer** | `StockPriceSubject` | 價格變動通知訂閱者 |
+| **Facade** | `StockMarketService` | 隱藏市場選擇、快取、解析編排與錯誤收斂 |
+| **Strategy（每市場一實作）** | `IStockDataSource` | 不同市場可獨立演進，零修改新增 / 替換來源（OCP） |
+| **Template Method** | `TwseFamilyDataSourceBase` | 證交所家族共用流程，子類別只提供差異 |
+| **Separation: Builder/Executor 類比** | `TwseStockParser` ↔ `IStockHttpFetcher` | 純解析與 IO 解耦，解析可單元測試 |
 | **Result Pattern** | `StockResult<T>` | 統一成功/失敗回傳，呼叫端免到處 try-catch |
-| **Cache-Aside** | `ICacheService.GetOrSetAsync` | 減少對證交所的重複請求 |
+| **Parameter Object** | `QuoteOptions` | 取代布林旗標參數，新增選項不必增加多載 |
+| **Async Stream** | `WatchAsync` | 以 `await foreach` 取代有狀態的 Observer |
+| **Cache-Aside** | `ICacheService.GetOrSetAsync` / `RefreshAsync` | 減少對證交所的重複請求 |
 | **DI Extension** | `AddTwStock()` | 一行接好所有相依 |
 
 ---
 
-## 11. 與舊版的對比與改進點
+## 12. 演進紀錄
 
-| 議題（舊版） | 舊做法 | 新做法 |
+### 1.x → 2.0
+
+| 議題（1.x） | 舊做法 | 2.0 |
 |---|---|---|
 | 市場分支 | 一個 Strategy 內 `if TSE else OTC` | 每市場一個 `IStockDataSource`，字典路由 |
-| 解析無法測 | HTTP + 解析混在一起 | `IStockParser` 純函式，餵 fixture 單測 |
-| 對外無介面 | README 寫 `IStockMarketService` 但不存在 | 真的補上介面並實作 |
+| 解析無法測 | HTTP + 解析混在一起 | Parser 純函式，餵 fixture 單測 |
+| 對外無介面 | README 寫 `IStockMarketService` 但不存在 | 補上介面並實作 |
 | 回傳不一致 | 有時 `null`、有時丟例外 | 統一 `StockResult<T>` |
 | 不可取消 | 無 `CancellationToken` | 全鏈貫穿 |
-| 單一框架 | `net8.0`、`Nullable=disable` | `net8.0;net9.0`、`Nullable=enable` |
 | 無測試/CI | 無 | Core/Twse 測試專案 + CI + 自動發 NuGet |
-| 依賴較重 | Newtonsoft.Json | System.Text.Json（砍依賴） |
-| API 模型外洩 | 放在 Strategy 公開檔 | 移到 Twse 專案 `internal` |
+| 依賴較重 | Newtonsoft.Json | System.Text.Json |
+
+### 2.x → 3.0
+
+| 議題（2.x） | 舊做法 | 3.0 |
+|---|---|---|
+| 公開面過大 | Parser、Fetcher、DataSource、基底類別都是 public | 實作全 `internal`，只公開服務、模型與擴充點 |
+| 可變模型 | 屬性可寫、陣列共用，快取可能被呼叫端改壞 | 不可變 record + 唯讀集合 |
+| 型別不精確 | `DateTime` 表日期、`string` 表漲跌、`uint` 量、平行陣列表五檔 | `DateOnly`、`decimal? Change`、`long`、`PriceLevel` |
+| 旗標參數 | `bypassCache` 在三個介面各加一個多載 | `QuoteOptions`；`ICacheService.RefreshAsync` |
+| 有狀態的 Observer | 訂閱存在服務實例上 | `WatchAsync`，服務無狀態 |
+| 命名空間分散 | `Models` / `Services` / `Observer` / `Cache` | `TWStockLib` + `TWStockLib.Abstractions`；DI 擴充放 `Microsoft.Extensions.DependencyInjection` |
+| `default(MarketType)` 是上櫃 | `OTC = 0` | `Unknown = 0` |
 
 ---
 
-## 12. Mechanism vs Policy
+## 13. Mechanism vs Policy
 
 > **Library 管「如何跟證交所拿資料、怎麼解析」（Mechanism）；應用層管「拿哪支股、怎麼顯示、漲跌幾趴要告警」（Policy）。**
 
 | 功能 | 層級 | 理由 |
 |------|------|------|
-| Big5 解碼、URL 組裝、JSON/HTML 解析 | **Library** | 與資料來源協定有關 |
-| 快取 TTL 預設值 | **Library**（可由 options 覆寫） | 機制面，但允許 Policy 調整 |
-| 要監控哪些股票代碼 | **Application** | 業務決策 |
-| 漲跌超過 X% 要不要通知 | **Application** | 業務語意，放進 Observer 實作 |
+| Big5 解碼、URL 組裝、JSON/HTML 解析、單位換算 | **Library** | 與資料來源協定有關 |
+| 快取 TTL 預設值、追蹤的最短間隔 | **Library**（目前寫死，未來可由 options 覆寫） | 機制面，保護上游不被打爆 |
+| 要追蹤哪些股票代碼 | **Application** | 業務決策 |
+| 漲跌超過 X% 要不要通知 | **Application** | 業務語意，寫在 `await foreach WatchAsync` 的迴圈裡 |
 | 報價數字的顯示格式 | **Application** | Presentation |
 
 ---
 
-## 13. 刻意不做的事（避免過度設計）
+## 14. 刻意不做的事（避免過度設計）
 
 - ❌ 不引入 Bridge / Orchestrator / 泛型 Template-Method Strategy —— 查詢維度固定，收益 < 成本。
-- ❌ 不做背景輪詢推播（`IStockPriceMonitor` / HostedService）—— 等有實際需求再加，介面已預留空間。
+- ❌ 不內建背景服務（`HostedService`）推播 —— `WatchAsync` 已讓呼叫端在自己的 `BackgroundService` 裡用一個 `await foreach` 完成。
 - ❌ 不為了「看起來厲害」而拆超過兩個 connector 套件 —— 目前證交所家族放同一個 `TWStockLib.Twse` 即可。
 - ❌ 不抽象 `ICacheService` 以外的儲存後端 —— `MemoryCache` 夠用，需要 Redis 再說。

@@ -5,10 +5,11 @@
 [![CI](https://github.com/twjackysu/TWStockLib/actions/workflows/ci.yml/badge.svg)](https://github.com/twjackysu/TWStockLib/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/github/license/twjackysu/TWStockLib.svg)](LICENSE)
 
-TWStockLib 是一個用於獲取台灣股市資料的 .NET 類別庫，提供股票清單、歷史數據與即時報價，並支援價格變化的觀察者模式。
+TWStockLib 是一個用於獲取台灣股市資料的 .NET 類別庫，提供股票清單、歷史數據、即時報價與成交價追蹤。
 
 - 全非同步、可取消（`async` + `CancellationToken`）
-- 統一以 `StockResult<T>` 回傳成功 / 失敗，呼叫端免到處 try-catch
+- 統一以 `StockResult<T>` 回傳成功 / 失敗，呼叫端免到處 try-catch；檢查 `IsSuccess` 後即可直接使用 `Value`
+- 模型都是不可變的 record，可以放心共用與快取
 - 每個市場一個資料來源，新增市場零修改現有程式碼（OCP）
 - 純函式解析層（與 IO 分離），可離線單元測試
 - 支援 `net8.0` / `net9.0` / `net10.0`
@@ -29,10 +30,10 @@ dotnet add package TWStockLib.Core
 
 ## 功能特點
 
-- 獲取上市（TSE）與上櫃（OTC）股票清單
-- 獲取股票歷史數據（跨月自動合併）
-- 獲取股票即時報價
-- 監控股票價格變化（觀察者模式）
+- 獲取上市（TSE）與上櫃（OTC）股票清單，預設排除權證與牛熊證
+- 獲取股票歷史日成交資料（跨月自動合併，上市與上櫃單位一致）
+- 獲取股票即時報價（含最佳五檔）
+- 以 `await foreach` 追蹤成交價變動
 - 內建快取，減少對上游的請求
 - 完整的錯誤處理與日誌記錄
 
@@ -42,119 +43,124 @@ dotnet add package TWStockLib.Core
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
-using TWStockLib.Services;
 
 var services = new ServiceCollection();
 services.AddLogging();
-services.AddTwStock();   // 註冊 TWStockLib 服務（含 TSE / OTC 兩個資料來源）
+services.AddTwStock();   // 註冊 TWStockLib 服務（含 TSE / OTC 兩個資料來源），重複呼叫無妨
 
 var provider = services.BuildServiceProvider();
 ```
 
 ### 步驟 2：取得服務
 
-在 Console 中：
-
 ```csharp
+using TWStockLib;   // 所有對外型別都在這個命名空間
+
 var stock = provider.GetRequiredService<IStockMarketService>();
 ```
 
-在 Controller 中透過建構式注入：
+在 Controller 中透過建構式注入（服務是 Singleton，可以注入到任何生命週期的元件）：
 
 ```csharp
-public class StockController : Controller
+public class StockController(IStockMarketService stock) : Controller
 {
-    private readonly IStockMarketService _stock;
-    public StockController(IStockMarketService stock) => _stock = stock;
 }
 ```
 
 ### 步驟 3：使用服務
 
-所有查詢方法皆為非同步，並回傳 `StockResult<T>`：以 `IsSuccess` 判斷成功，失敗時帶 `ErrorCode` / `ErrorMessage`。
-呼叫端用 `CancellationToken` 取消時，照 .NET 慣例拋出 `OperationCanceledException`，不會變成失敗結果。
-回傳的模型是呼叫端專屬的複本，修改它們不會影響函式庫內部的快取。
-
-#### 獲取股票清單
-
-```csharp
-var all = await stock.GetAllStockListAsync();
-if (all.IsSuccess)
-    Console.WriteLine($"共 {all.Value!.Count} 支股票");
-
-var tse = await stock.GetStockListAsync(MarketType.TSE);
-var otc = await stock.GetStockListAsync(MarketType.OTC);
-```
-
-#### 獲取歷史數據
-
-```csharp
-var history = await stock.GetHistoricalDataAsync(
-    "2330",
-    new DateTime(2023, 1, 1),
-    new DateTime(2023, 1, 31),
-    MarketType.TSE);
-
-if (history.IsSuccess)
-{
-    foreach (var d in history.Value!)
-        Console.WriteLine($"{d.Date:yyyy-MM-dd} 開:{d.OpeningPrice} 收:{d.ClosingPrice}");
-}
-```
-
-#### 獲取即時報價
+查詢方法都回傳 `StockResult<T>`：以 `IsSuccess` 判斷成功，失敗時帶 `ErrorCode` / `ErrorMessage` / `Exception`。
 
 ```csharp
 var result = await stock.GetRealtimeQuoteAsync("2330", MarketType.TSE);
 if (result.IsSuccess)
-{
-    var q = result.Value!;
-    Console.WriteLine($"{q.Symbol} {q.Name} 最新價:{q.LastPrice} 最高:{q.HighestPrice} 最低:{q.LowestPrice}");
-}
+    Console.WriteLine(result.Value.LastPrice);          // 檢查過 IsSuccess，不必再寫 Value!
 else
+    Console.WriteLine($"{result.ErrorCode}: {result.ErrorMessage}");
+
+if (result.TryGetValue(out var quote))                  // 或用 TryGetValue
+    Console.WriteLine(quote.Name);
+
+var value = result.GetValueOrThrow();                   // 偏好例外流程：失敗時拋出帶 ErrorCode 的 StockQueryException
+```
+
+- 呼叫端用 `CancellationToken` 取消時，照 .NET 慣例拋出 `OperationCanceledException`，不會變成失敗結果。
+- 參數本身不合法（空白代號、起日晚於迄日）時拋出 `ArgumentException`。
+
+#### 股票清單
+
+```csharp
+var all = await stock.GetAllStockListAsync();
+if (all.IsSuccess)
+    Console.WriteLine($"共 {all.Value.Count} 支股票");
+
+var tse = await stock.GetStockListAsync(MarketType.TSE);
+var otcWithWarrants = await stock.GetStockListAsync(MarketType.OTC, includeWarrant: true);
+```
+
+預設排除權證；是否為權證依 ISIN 的 CFICode 判斷，認購、認售與牛熊證都算在內。
+
+#### 歷史資料
+
+```csharp
+var history = await stock.GetHistoricalDataAsync(
+    "2330", MarketType.TSE, new DateOnly(2025, 9, 1), new DateOnly(2025, 9, 30));
+
+foreach (var d in history.GetValueOrThrow())
+    Console.WriteLine($"{d.Date:yyyy-MM-dd} 開:{d.OpeningPrice} 收:{d.ClosingPrice} 漲跌:{d.Change}");
+```
+
+- 成交量 `TradeVolume` 一律是「股」、成交金額 `TurnoverValue` 一律是「元」，上市與上櫃一致。
+- 當日無成交時開高低收為 `null`；除權息等不比價的日子 `Change` 為 `null`。
+
+#### 即時報價
+
+```csharp
+var result = await stock.GetRealtimeQuoteAsync("2330", MarketType.TSE);
+if (result.TryGetValue(out var q))
 {
-    Console.WriteLine($"取得失敗：{result.ErrorCode} - {result.ErrorMessage}");
+    Console.WriteLine($"{q.Symbol} {q.Name} 最新價:{q.LastPrice} 最高:{q.HighestPrice} 最低:{q.LowestPrice}");
+    foreach (var ask in q.Asks)
+        Console.WriteLine($"委賣 {ask.Price} × {ask.Volume} 張");
 }
 ```
 
 即時報價預設會在函式庫內快取 30 秒，同一檔股票在這段時間內重複查詢不會再打上游。
-呼叫端自己已有節流、或需要「這一刻」的值時，可以略過快取（2.2.0 起）：
+呼叫端自己已有節流、或需要「這一刻」的值時，可以略過快取：
 
 ```csharp
 // 略過內部快取、一律向證交所查詢；查到的新報價仍會更新快取，之後的一般呼叫會拿到它
-var fresh = await stock.GetRealtimeQuoteAsync("2330", MarketType.TSE, bypassCache: true);
+var fresh = await stock.GetRealtimeQuoteAsync("2330", MarketType.TSE, QuoteOptions.NoCache);
 ```
 
 > 上游端點（mis.twse.com.tw）本身有頻率限制，略過快取後的呼叫頻率由呼叫端負責。
-> 加權指數在 MIS 的代號是 `t00`，直接當作上市（`MarketType.TSE`）的一檔查即可：
-> `GetRealtimeQuoteAsync("t00", MarketType.TSE, bypassCache: true)`；`LastPrice` 是指數、
-> `YesterdayClosingPrice` 是昨收。盤前尚未有第一筆成交時 `LastPrice` 為 `null`。
-> `SyncTime` 是 `tlong` 換算成的 UTC 時間（`DateTimeKind.Unspecified`）。
+> 加權指數在 MIS 的代號是 `t00`，直接當作上市（`MarketType.TSE`）的一檔查即可；`LastPrice` 是指數、
+> `YesterdayClosingPrice` 是昨收，指數沒有漲跌停，`LimitUp` / `LimitDown` 為 `null`。
+> 盤前尚未有第一筆成交時 `LastPrice` 為 `null`。`SyncTime` 是台灣時間（`+08:00`）的 `DateTimeOffset`。
+> 查無代號、或代號不屬於指定的市場（例如以 `MarketType.OTC` 查 2330）時回傳 `NOT_FOUND`。
 
-#### 使用觀察者模式監控價格變化
+#### 追蹤成交價
 
 ```csharp
-using TWStockLib.Observer;
-
-public class MyObserver : IStockPriceObserver
-{
-    public void OnPriceChanged(string symbol, decimal newPrice, decimal oldPrice)
-    {
-        var pct = (newPrice - oldPrice) / oldPrice * 100;
-        Console.WriteLine($"{symbol} {(newPrice > oldPrice ? "上漲" : "下跌")}：{oldPrice} → {newPrice} ({pct:F2}%)");
-    }
-}
-
-var observer = new MyObserver();
-stock.SubscribePriceChanges("2330", observer);
-
-// 連續取得報價時，價格變動會通知觀察者
-await stock.GetRealtimeQuoteAsync("2330", MarketType.TSE);
-
-stock.UnsubscribePriceChanges("2330", observer);
+await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppingToken))
+    Console.WriteLine($"{quote.SyncTime:HH:mm:ss} {quote.Symbol} {quote.LastPrice}");
 ```
 
-> 內建 `ConsoleStockPriceObserver`（於 `TWStockLib.Observer.DefaultProvidedObservers`）可直接使用。
+- 先回傳一次目前的報價，之後每隔 `interval`（預設與最短皆為 5 秒）略過快取查詢，只在成交價變動時回傳。
+- 上游暫時失敗會記錄後在下一輪重試；查無此代號時拋出 `StockQueryException`（`ErrorCode` 為 `NOT_FOUND`）。
+- 以 `CancellationToken` 結束追蹤，結束時拋出 `OperationCanceledException`。
+
+## 擴充
+
+- **自訂資料來源**：實作 `TWStockLib.Abstractions.IStockDataSource` 並註冊；同一市場註冊多個來源時以最後註冊的為準，
+  因此可以用來替換內建來源（例如改接券商 API）。
+
+  ```csharp
+  services.AddTwStock();
+  services.AddSingleton<IStockDataSource, MyBrokerTseSource>();   // Market => MarketType.TSE，取代內建的上市來源
+  ```
+
+- **替換快取**：在 `AddTwStock()` 之前註冊自己的 `ICacheService`，會保留你的實作。
 
 ## 錯誤碼
 
@@ -166,6 +172,7 @@ stock.UnsubscribePriceChanges("2330", observer);
 | `NOT_FOUND` | 上游查無此股票 / 無資料 |
 | `UPSTREAM_ERROR` | 上游連線或回應錯誤 |
 | `TIMEOUT` | 上游在 HttpClient 逾時內沒有回應（2.3.0 起） |
+| `PARSE_ERROR` | 上游回應的格式無法解析，例如被擋下時回傳的錯誤頁（3.0.0 起） |
 
 ## 支援的市場
 
@@ -176,7 +183,7 @@ stock.UnsubscribePriceChanges("2330", observer);
 
 1. 所有資料皆從網路即時獲取，需要連線。
 2. 歷史數據以月為單位查詢，跨月會自動合併。
-3. 即時報價快取 30 秒、股票清單與已結束月份的歷史快取 1 天、當月歷史快取 30 分鐘，以減少上游請求。即時報價可用 `bypassCache: true` 略過快取。
+3. 即時報價快取 30 秒、股票清單與已結束月份的歷史快取 1 天、當月歷史快取 30 分鐘，以減少上游請求。即時報價可用 `QuoteOptions.NoCache` 略過快取。
 4. 歷史資料的成交量一律是「股」、成交金額一律是「元」，上市與上櫃單位一致。
 
 ## 版本紀錄
@@ -185,12 +192,48 @@ stock.UnsubscribePriceChanges("2330", observer);
 
 | 版本 | 變更 |
 |------|------|
-| 2.3.0 | 修正多項資料與行為錯誤：上櫃歷史單位、牛熊證過濾、語系相依的解析、取消與逾時、價格訂閱的執行緒安全與生命週期等（見下方升級說明）；AngleSharp 最低版本升至 1.5.0（修補 GHSA-pgww-w46g-26qg） |
+| 3.0.0 | 破壞性變更：不可變 record 模型、`DateOnly`、`QuoteOptions`、以 `WatchAsync` 取代觀察者、命名空間整併、實作類別改為 internal；修正查無代號時回傳空報價（見下方升級說明） |
+| 2.3.0 | 修正多項資料與行為錯誤：上櫃歷史單位、牛熊證過濾、語系相依的解析、取消與逾時、價格訂閱的執行緒安全與生命週期等；AngleSharp 最低版本升至 1.5.0（修補 GHSA-pgww-w46g-26qg） |
 | 2.2.1 | 套件內 DLL 的組件版本改為與套件版本一致（2.2.0 的 DLL 仍標示為 2.1.1），功能與 2.2.0 相同 |
 | 2.2.0 | 即時報價新增 `bypassCache` 參數，可略過內部 30 秒快取；新增成員皆有預設介面實作，既有實作不需修改 |
 | 2.1.1 | 證交所 / 櫃買中心端點改走 https |
 | 2.1.0 | 新增 `net10.0` 支援 |
 | 2.0.0 | 架構重構，API 有破壞性變更（見下方升級說明） |
+
+## 從 2.x 升級到 3.0
+
+3.0 是 API 整理的破壞性版本。多數情況只要照下表替換即可：
+
+| 2.x | 3.0 |
+|-----|-----|
+| `using TWStockLib.Models;` / `.Services;` / `.Observer;` | `using TWStockLib;`（`AddTwStock()` 在 `Microsoft.Extensions.DependencyInjection`，不必另外 using） |
+| `AddStockServices()` | `AddTwStock()` |
+| `GetHistoricalDataAsync(symbol, DateTime start, DateTime end, market)` | `GetHistoricalDataAsync(symbol, market, DateOnly from, DateOnly to)` |
+| `GetRealtimeQuoteAsync(symbol, market, bypassCache: true)` | `GetRealtimeQuoteAsync(symbol, market, QuoteOptions.NoCache)` |
+| `SubscribePriceChanges` / `IStockPriceObserver` / `ConsoleStockPriceObserver` | `await foreach (var q in stock.WatchAsync(symbol, market, ct: ct))` |
+| `result.Value!` | 檢查 `IsSuccess` 後直接用 `result.Value`，或 `TryGetValue` / `GetValueOrThrow` |
+| `StockQuote.Top5SellPrice` / `Top5SellVolume` / `Top5BuyPrice` / `Top5BuyVolume` | `StockQuote.Asks` / `Bids`（`PriceLevel(Price, Volume)`） |
+| `StockQuote.SyncTime`（`DateTime`，UTC 但 Kind 未指定） | `DateTimeOffset`（`+08:00`） |
+| `StockHistory.Date`（`DateTime`） | `DateOnly` |
+| `StockHistory.TurnOverInValue` | `TurnoverValue` |
+| `StockHistory.DailyPricing`（`string`） | `Change`（`decimal?`，不比價為 `null`） |
+| 無成交日的開高低收為 `0` | `null` |
+| 成交量、筆數為 `uint` | `long` |
+| `StockQuote` 繼承 `StockData` | 兩者為獨立的 record |
+| 模型屬性可修改 | 不可變 record，需要修改時用 `with` 產生副本 |
+| `MarketType`：`OTC = 0`、`TSE = 1` | `Unknown = 0`、`TSE = 1`、`OTC = 2`（若曾以整數保存，請轉換） |
+| 上游格式無法解析時回 `UPSTREAM_ERROR` | `PARSE_ERROR` |
+| 空白代號、起日晚於迄日照樣查詢 | 拋出 `ArgumentException` |
+| 查無代號時回傳欄位全空的報價 | `NOT_FOUND` |
+
+自訂 `IStockDataSource` / `ICacheService` 的實作者另需注意：
+
+- `IStockDataSource.FetchRealtimeQuoteAsync` 改為 `(symbol, QuoteOptions options, ct)`，請遵守 `options.BypassCache`；
+  `FetchHistoricalDataAsync` 改為 `(symbol, DateOnly from, DateOnly to, ct)`；回傳的集合請用不可變集合。
+- `ICacheService` 改為 `GetOrSetAsync(key, factory, expiry)` 與 `RefreshAsync(key, factory, expiry)` 兩個方法，`expiry` 必填。
+- 原本公開的 `TwseStockDataSource`、`TpexStockDataSource`、`TwseFamilyDataSourceBase`、`IStockParser`、
+  `TwseStockParser`、`IStockHttpFetcher`、`TwseHttpFetcher` 改為 internal，請改用 `AddTwStock()` 取得內建來源。
+- `TWStockLib.Cache` 命名空間移除，`ICacheService` / `MemoryCacheService` 移到 `TWStockLib.Abstractions`。
 
 ## 從 2.2.x 升級到 2.3.0
 
@@ -213,7 +256,7 @@ API 簽章不變，但以下修正會改變回傳的資料或行為，升級前�
 
 2.0 版為架構重構，API 有破壞性變更：
 
-- `AddStockServices()` → `AddTwStock()`（舊名仍保留但標記 `[Obsolete]`）
+- `AddStockServices()` → `AddTwStock()`（舊名在 2.x 保留但標記 `[Obsolete]`，3.0 移除）
 - 服務方法改為非同步並回傳 `StockResult<T>`：
   `GetRealtimeQuote` → `GetRealtimeQuoteAsync`、`GetHistoricalData` → `GetHistoricalDataAsync`、
   `GetStockList` → `GetStockListAsync`、`GetAllStockList` → `GetAllStockListAsync`

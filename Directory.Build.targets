@@ -10,9 +10,11 @@
     DocumentationFile，時機早於本檔），故放在各 csproj，不放這裡。
   -->
 
-  <!-- SourceLink：發佈時帶原始碼除錯資訊 -->
-  <ItemGroup Condition="'$(IsPackable)' == 'true'">
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
-  </ItemGroup>
+  <!--
+    註：SourceLink 已由 .NET 8+ SDK 內建，不再參考 Microsoft.SourceLink.GitHub。
+    目前沒有要放的設定，但保留本檔：MSBuild 會往上層目錄找第一個 Directory.Build.targets，
+    若 repo 放在另一個 checkout 底下（例如 .claude/worktrees/ 的 git worktree），
+    刪掉本檔會誤吃到外層 checkout 的版本。
+  -->
 
 </Project>

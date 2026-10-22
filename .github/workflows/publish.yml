@@ -42,7 +42,7 @@ jobs:
         run: dotnet restore
 
       # build 與 pack 都帶同一個 Version：只在 pack 帶 PackageVersion 的話，
-      # --no-build 打包的 DLL 組件版本會停在 csproj 的值，跟套件版本對不上。
+      # --no-build 打包的 DLL 組件版本會停在 Directory.Build.props 的值，跟套件版本對不上。
       - name: Build
         run: dotnet build --no-restore --configuration Release -p:Version=${{ steps.version.outputs.VERSION }}
 

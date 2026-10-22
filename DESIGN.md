@@ -1,6 +1,6 @@
 # TWStockLib — 設計文件
 
-> 對應版本：3.0
+> 對應版本：3.1
 > 目標：**職責清楚、可測試、易擴充、可多框架發佈到 NuGet** 的類別庫。
 > 設計心法承襲 `DataAnalysisLibrary`，但**刻意不過度設計**——只引入對本 lib 真正有價值的抽象。
 
@@ -105,11 +105,14 @@ TWStockLib.slnx
 │   └── TWStockLib.Twse/                    ← 證交所家族實作（全部 internal），依賴 AngleSharp
 │       ├── DataSources/  TwseFamilyDataSourceBase / TwseStockDataSource (TSE) / TpexStockDataSource (OTC)
 │       ├── Parsers/      TwseStockParser（static，純函式）
-│       ├── Http/         IStockHttpFetcher / TwseHttpFetcher
+│       ├── Http/         IStockHttpFetcher / TwseHttpFetcher、TwStockHttpClientSetup（具名 HttpClient）、
+│       │                 RateLimitingHandler / PerHostRateLimiter / SlidingLogRateLimiter（限流）
+│       ├── TwStockOptions.cs                      (公開設定：快取時間、限流、HttpClientName)
 │       └── TwStockServiceCollectionExtensions.cs  (AddTwStock，命名空間 Microsoft.Extensions.DependencyInjection)
 └── tests/
     ├── TWStockLib.Core.Tests/             ← Service 路由、錯誤收斂、WatchAsync（FakeTimeProvider）、StockResult、快取
-    └── TWStockLib.Twse.Tests/             ← Parser 餵 fixture 字串（離線）、DataSource 快取行為、DI 註冊
+    └── TWStockLib.Twse.Tests/             ← Parser 餵 fixture 字串（離線）、DataSource 快取行為、DI 註冊、
+                                             限流與具名 HttpClient（假 HttpMessageHandler + FakeTimeProvider）
 ```
 
 > **分包理由**：`Core` 沒有第三方 SDK 依賴，單元測試最乾淨；想換解析來源（例如改接券商 API）只要新增一個 connector 套件，不動 Core。
@@ -163,6 +166,17 @@ public interface ICacheService
 
 `ICacheService` 以兩個意圖明確的方法取代「`bypassCache` 布林參數」：呼叫端一看就知道是「有就用」還是「強制更新」。
 
+設定與 HTTP 管線的擴充點（3.1 起，位於 `TWStockLib` 套件）：
+
+```csharp
+services.AddTwStock(options => { ... });                    // TwStockOptions：快取時間、RateLimit
+services.AddHttpClient(TwStockOptions.HttpClientName)        // 同一個具名 HttpClient 的 IHttpClientBuilder
+    .AddStandardResilienceHandler();                         // 重試等韌性由應用層自行決定要不要加
+```
+
+- `AddTwStock()` 保留原本的無參數多載，另加 `AddTwStock(Action<TwStockOptions>)`，不改變既有方法簽章（二進位相容）。
+- 只公開設定與 client 名稱；限流器、handler 都是 internal，換實作不影響使用者。
+
 ---
 
 ## 6. Result 模型
@@ -210,6 +224,14 @@ public static IServiceCollection AddTwStock(this IServiceCollection services)
     services.AddMemoryCache();
     services.TryAddSingleton(TimeProvider.System);
     services.TryAddSingleton<ICacheService, MemoryCacheService>();
+
+    services.AddOptions<TwStockOptions>();
+    services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<TwStockOptions>, TwStockOptionsValidator>());
+
+    // 具名 HttpClient：User-Agent / 逾時（Configure）與限流 handler（PostConfigure，最內層）
+    services.TryAddEnumerable(ServiceDescriptor.Singleton<IConfigureOptions<HttpClientFactoryOptions>, TwStockHttpClientSetup>());
+    services.TryAddEnumerable(ServiceDescriptor.Singleton<IPostConfigureOptions<HttpClientFactoryOptions>, TwStockHttpClientSetup>());
+    services.TryAddSingleton(sp => new PerHostRateLimiter(/* RateLimit 設定 */, sp.GetRequiredService<TimeProvider>()));
     services.TryAddSingleton<IStockHttpFetcher, TwseHttpFetcher>();
 
     services.TryAddEnumerable(ServiceDescriptor.Singleton<IStockDataSource, TwseStockDataSource>());
@@ -221,6 +243,7 @@ public static IServiceCollection AddTwStock(this IServiceCollection services)
 ```
 
 - 全部用 `TryAdd*`：可重複呼叫；使用者在之前註冊的相依（例如自己的 `ICacheService`）會被保留。
+  具名 HttpClient 的設定也以 `TryAddEnumerable` 註冊的 options 類別套用，重複呼叫不會重複加 User-Agent 或多掛一層限流。
 - `StockMarketService` 把 `IEnumerable<IStockDataSource>` 收成 `Dictionary<MarketType, …>`，同一市場以**最後註冊**的為準，
   因此使用者可以在 `AddTwStock()` 之後註冊自己的來源來取代內建來源。
 - 服務是 Singleton 且無狀態，可注入任何生命週期的元件。
@@ -236,6 +259,30 @@ public static IServiceCollection AddTwStock(this IServiceCollection services)
   格式不符的列直接略過，不以預設值捏造資料。
 - 測試把證交所 / 櫃買的真實回應存成 fixture 字串，餵進 Parser 斷言輸出，**不需要網路、穩定、快**。
 
+### HttpClient 管線與限流（3.1 起）
+
+`TwseHttpFetcher` 以具名 client（`TwStockOptions.HttpClientName`）送出請求，管線由外而內：
+
+```
+使用者加的 handler（例如 AddStandardResilienceHandler 的重試）
+  → RateLimitingHandler（最內層，每一次實際送出都先取得許可）
+    → primary handler（SocketsHttpHandler）
+```
+
+- **為什麼要內建限流**：證交所會暫時封鎖短時間大量請求的 IP。歷史資料一個月一個請求、依序抓取，長區間查詢會連續打上游；
+  多檔 `WatchAsync` 各自每 5 秒查一次。官方沒有公告門檻，社群經驗（twstock 等）是每 5 秒 3 個請求，預設採用這個值。
+- **每主機分開計算**：`PerHostRateLimiter`（`PartitionedRateLimiter<HttpRequestMessage>`）依 `RequestUri.Host` 分區，
+  查歷史（www.twse.com.tw）不會拖慢即時報價（mis.twse.com.tw）。
+- **嚴格滑動視窗**：`SlidingLogRateLimiter` 繼承 `System.Threading.RateLimiting.RateLimiter`，記下每個許可的核發時間，
+  任何 5 秒內最多 3 個。不用內建的 `SlidingWindowRateLimiter` / `TokenBucketRateLimiter`：它們以計時器分段補充，
+  分段邊界前後可放行接近兩倍；且直接讀 `Stopwatch`，無法以 `FakeTimeProvider` 測試。等候走 `TimeProvider`，可取消。
+- **排隊而不失敗**：拿不到許可就等，不回錯誤；等候時間算在 HttpClient 逾時內，呼叫端可用 `CancellationToken` 放棄。
+- **放在最內層**：限流 handler 以 `IPostConfigureOptions<HttpClientFactoryOptions>` 加入，排在使用者所有 `AddHttpMessageHandler`
+  之後，重試不會繞過限流。限流狀態是 Singleton，不隨 `IHttpClientFactory` 輪替 handler 而歸零。
+- **逾時與 User-Agent**：逾時明確設為 100 秒（與 HttpClient 原本預設相同）：ISIN 股票清單頁有數 MB、上游傳得慢
+  （實測上櫃清單 3.2 MB 約 24 秒），而且排隊時間也算在內。User-Agent 為 `TWStockLib/{版本} (+專案網址)`，讓上游能辨識來源。
+- **不內建重試**：重試策略（次數、退避、斷路器）因部署環境而異，交給使用者以同一個 client 名稱自行加上，函式庫不相依 Polly。
+
 ---
 
 ## 9. 不可變模型與快取
@@ -245,6 +292,7 @@ public static IServiceCollection AddTwStock(this IServiceCollection services)
   不必像 2.3 那樣每次回傳都做複本。
 - 自訂 `IStockDataSource` 的實作者也應回傳不可變集合（介面文件已註明）。
 - 快取時間：即時報價 30 秒；股票清單與已結束月份的歷史 1 天；當月（以台灣時間判斷）與未來月份的歷史 30 分鐘。
+  3.1 起可由 `TwStockOptions` 覆寫，預設值不變；不合法的值（0 或負）在第一次取得服務時以 `OptionsValidationException` 回報。
 
 ---
 
@@ -277,6 +325,8 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 | **Parameter Object** | `QuoteOptions` | 取代布林旗標參數，新增選項不必增加多載 |
 | **Async Stream** | `WatchAsync` | 以 `await foreach` 取代有狀態的 Observer |
 | **Cache-Aside** | `ICacheService.GetOrSetAsync` / `RefreshAsync` | 減少對證交所的重複請求 |
+| **Options Pattern** | `TwStockOptions` + `IValidateOptions` | 機制參數集中、有預設值、可覆寫並在啟動時驗證 |
+| **Chain of Responsibility** | `RateLimitingHandler`（`DelegatingHandler`） | 限流、重試等橫切關注點掛在 HttpClient 管線，Fetcher 不必知道 |
 | **DI Extension** | `AddTwStock()` | 一行接好所有相依 |
 
 ---
@@ -307,6 +357,15 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 | 命名空間分散 | `Models` / `Services` / `Observer` / `Cache` | `TWStockLib` + `TWStockLib.Abstractions`；DI 擴充放 `Microsoft.Extensions.DependencyInjection` |
 | `default(MarketType)` 是上櫃 | `OTC = 0` | `Unknown = 0` |
 
+### 3.0 → 3.1（不破壞相容）
+
+| 議題（3.0） | 舊做法 | 3.1 |
+|---|---|---|
+| 快取時間寫死 | `TwseFamilyDataSourceBase` 內的常數 | `TwStockOptions`，預設值不變 |
+| 未命名 HttpClient | 預設逾時、無 User-Agent、無法單獨設定 | 具名 client `TwStockOptions.HttpClientName`，明確逾時與 User-Agent |
+| 沒有限流 | 長區間歷史、多檔追蹤可能連續打上游，被封鎖 IP | 每主機 3 個請求 / 5 秒，排隊等候 |
+| 加不了重試 | 拿不到 client 的 builder | 以 client 名稱自行加 `AddStandardResilienceHandler()`，重試也經過限流 |
+
 ---
 
 ## 13. Mechanism vs Policy
@@ -316,7 +375,9 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 | 功能 | 層級 | 理由 |
 |------|------|------|
 | Big5 解碼、URL 組裝、JSON/HTML 解析、單位換算 | **Library** | 與資料來源協定有關 |
-| 快取 TTL 預設值、追蹤的最短間隔 | **Library**（目前寫死，未來可由 options 覆寫） | 機制面，保護上游不被打爆 |
+| 快取 TTL、限流頻率 | **Library 給預設值，應用層可經 `TwStockOptions` 覆寫**（3.1 起） | 機制面，保護上游不被打爆；預設值放在函式庫，特殊環境（共用 IP、自建代理）再調整 |
+| 追蹤的最短間隔 | **Library**（寫死 5 秒） | 對齊 MIS 的更新頻率，再短也拿不到新資料 |
+| 重試、斷路器、逾時策略 | **Application**（經 `TwStockOptions.HttpClientName` 加在 HttpClient 上） | 取捨因部署環境而異；函式庫不強迫相依 Polly |
 | 要追蹤哪些股票代碼 | **Application** | 業務決策 |
 | 漲跌超過 X% 要不要通知 | **Application** | 業務語意，寫在 `await foreach WatchAsync` 的迴圈裡 |
 | 報價數字的顯示格式 | **Application** | Presentation |
@@ -329,3 +390,5 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 - ❌ 不內建背景服務（`HostedService`）推播 —— `WatchAsync` 已讓呼叫端在自己的 `BackgroundService` 裡用一個 `await foreach` 完成。
 - ❌ 不為了「看起來厲害」而拆超過兩個 connector 套件 —— 目前證交所家族放同一個 `TWStockLib.Twse` 即可。
 - ❌ 不抽象 `ICacheService` 以外的儲存後端 —— `MemoryCache` 夠用，需要 Redis 再說。
+- ❌ 不內建重試 / 斷路器 —— 只提供具名 HttpClient 讓使用者自己加，避免強迫相依 Polly，也避免替使用者決定重試策略。
+- ❌ 不提供逐主機的限流設定 —— 四個上游主機共用同一組 `PermitLimit` / `Window`，各自計算；目前沒有個別調整的需求。

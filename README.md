@@ -35,6 +35,8 @@ dotnet add package TWStockLib.Core
 - 獲取股票即時報價（含最佳五檔）
 - 以 `await foreach` 追蹤成交價變動
 - 內建快取，減少對上游的請求
+- 內建每主機限流，長區間歷史查詢與多檔追蹤不會讓證交所封鎖你的 IP
+- 快取時間、限流可設定；可在 HttpClient 上自行加上重試（不強迫相依 Polly）
 - 完整的錯誤處理與日誌記錄
 
 ## 快速入門
@@ -150,6 +152,73 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 - 上游暫時失敗會記錄後在下一輪重試；查無此代號時拋出 `StockQueryException`（`ErrorCode` 為 `NOT_FOUND`）。
 - 以 `CancellationToken` 結束追蹤，結束時拋出 `OperationCanceledException`。
 
+## 設定
+
+`AddTwStock` 可帶入設定，調整快取時間與限流；沒有設定的項目維持預設值（與 3.0 的行為相同）：
+
+```csharp
+services.AddTwStock(options =>
+{
+    options.QuoteCacheDuration = TimeSpan.FromSeconds(10);
+    options.ClosedMonthHistoryCacheDuration = TimeSpan.FromDays(7);
+    options.RateLimit.PermitLimit = 2;
+    options.RateLimit.Window = TimeSpan.FromSeconds(5);
+});
+```
+
+| 設定 | 預設 | 說明 |
+|------|------|------|
+| `QuoteCacheDuration` | 30 秒 | 即時報價的快取時間；單次略過快取用 `QuoteOptions.NoCache` |
+| `StockListCacheDuration` | 1 天 | 股票清單的快取時間 |
+| `ClosedMonthHistoryCacheDuration` | 1 天 | 已結束月份（台灣時間）的歷史資料，不再變動 |
+| `CurrentMonthHistoryCacheDuration` | 30 分鐘 | 當月與未來月份的歷史資料，每個交易日收盤後會多一列 |
+| `RateLimit.Enabled` | `true` | 是否啟用內建限流 |
+| `RateLimit.PermitLimit` | 3 | 每個主機在 `Window` 內最多送出的請求數 |
+| `RateLimit.Window` | 5 秒 | 限流的滑動視窗長度 |
+
+快取時間與 `Window` 必須大於 0、`PermitLimit` 至少為 1，否則第一次取得服務時拋出 `OptionsValidationException`。
+也可以從設定檔繫結：`services.Configure<TwStockOptions>(configuration.GetSection("TwStock"))`。
+
+### 限流
+
+證交所會暫時封鎖短時間內送出大量請求的 IP。官方沒有公告數字，社群經驗是**每 5 秒超過 3 個請求**就可能被擋，
+因此內建限流預設採用這個頻率，並對每個上游主機（`www.twse.com.tw`、`mis.twse.com.tw`、`www.tpex.org.tw`、
+`isin.twse.com.tw`）分開計算：任何 5 秒內最多送出 3 個請求，超過的請求排隊等候，不會失敗。
+
+- 歷史資料一個月一個請求：查一整年（12 個月）約需 15 秒。查歷史不會拖慢即時報價，兩者是不同主機。
+- `WatchAsync` 同時追蹤超過 3 檔時，每檔的實際更新間隔會被拉長（例如 6 檔約每 10 秒一次）。
+- 排隊的時間也算在 HttpClient 的逾時內；呼叫端可用 `CancellationToken` 放棄等候。
+- 限流在 HttpClient 管線的最內層，自行加上的重試每一次實際送出也都會計入。
+- 同一個應用程式內共用額度；多個行程或多台機器共用同一個對外 IP 時，額度不會合併計算，請自行調低 `PermitLimit`。
+
+### HttpClient 與重試
+
+內建來源使用具名 HttpClient `TwStockOptions.HttpClientName`（`"TWStockLib"`），預設逾時 100 秒、
+User-Agent 為 `TWStockLib/{版本}`。以同一個名稱取得 `IHttpClientBuilder`，就能加上重試、調整逾時或設定 Proxy：
+
+```csharp
+// dotnet add package Microsoft.Extensions.Http.Resilience
+services.AddTwStock();
+services.AddHttpClient(TwStockOptions.HttpClientName)
+    .AddStandardResilienceHandler(o =>
+    {
+        // 股票清單頁有數 MB、上游傳得慢（實測 3.2 MB 約 24 秒），排隊等限流的時間也算在內，
+        // 標準預設（單次 10 秒、總計 30 秒）太短
+        o.AttemptTimeout.Timeout = TimeSpan.FromSeconds(60);
+        o.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(180);
+        o.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(120);   // 須至少為單次逾時的兩倍
+    });
+```
+
+只想調整逾時：
+
+```csharp
+services.AddHttpClient(TwStockOptions.HttpClientName)
+    .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(60));
+```
+
+請在 `AddTwStock()` **之後**設定，才會蓋過內建的預設值。
+
 ## 擴充
 
 - **自訂資料來源**：實作 `TWStockLib.Abstractions.IStockDataSource` 並註冊；同一市場註冊多個來源時以最後註冊的為準，
@@ -183,8 +252,9 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 
 1. 所有資料皆從網路即時獲取，需要連線。
 2. 歷史數據以月為單位查詢，跨月會自動合併。
-3. 即時報價快取 30 秒、股票清單與已結束月份的歷史快取 1 天、當月歷史快取 30 分鐘，以減少上游請求。即時報價可用 `QuoteOptions.NoCache` 略過快取。
+3. 即時報價快取 30 秒、股票清單與已結束月份的歷史快取 1 天、當月歷史快取 30 分鐘，以減少上游請求，可由 `TwStockOptions` 調整（見[設定](#設定)）。即時報價可用 `QuoteOptions.NoCache` 略過快取。
 4. 歷史資料的成交量一律是「股」、成交金額一律是「元」，上市與上櫃單位一致。
+5. 對每個上游主機預設每 5 秒最多 3 個請求，超過的請求排隊等候（見[限流](#限流)）。
 
 ## 版本紀錄
 

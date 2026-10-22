@@ -151,7 +151,8 @@ public class TwseFamilyDataSourceTests
 
         var list = await source.FetchStockListAsync();
 
-        Assert.DoesNotContain(list.Values, s => s.SecurityType == SecurityType.Warrant);
+        Assert.DoesNotContain("030001", list.Keys); // 認購
+        Assert.DoesNotContain("03004T", list.Keys); // 認售
         Assert.DoesNotContain("03989C", list.Keys); // 牛證
         Assert.DoesNotContain("03726B", list.Keys); // 熊證
         Assert.Contains("0050", list.Keys);
@@ -182,6 +183,39 @@ public class TwseFamilyDataSourceTests
         Assert.Equal(["https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"], otcFetcher.Urls);
         Assert.Equal(7, otc.Count);
         Assert.All(otc.Values, s => Assert.Equal(MarketType.OTC, s.Market));
+    }
+
+    [Theory]
+    [InlineData("030001", true)]   // 認購
+    [InlineData("03004T", true)]   // 認售
+    [InlineData("03989C", true)]   // 牛證
+    [InlineData("03726B", true)]   // 熊證
+    [InlineData("085555", true)]
+    [InlineData("2330", false)]
+    [InlineData("0050", false)]
+    [InlineData("00631L", false)]  // ETF：00 開頭
+    [InlineData("01001T", false)]  // REIT
+    [InlineData("020000", false)]  // ETN
+    [InlineData("2887Z1", false)]  // 特別股
+    [InlineData("910322", false)]  // TDR
+    [InlineData("090001", false)]
+    public void IsWarrantSymbol_Tse(string symbol, bool expected)
+    {
+        Assert.Equal(expected, new TwseStockDataSource(new IsinFetcher(""), NewCache(), TimeProvider.System).IsWarrantSymbol(symbol));
+    }
+
+    [Theory]
+    [InlineData("700019", true)]
+    [InlineData("72479U", true)]
+    [InlineData("6510", false)]
+    [InlineData("8349A", false)]
+    [InlineData("00679B", false)]
+    [InlineData("020001", false)]
+    [InlineData("01111S", false)]  // 資產基礎證券
+    [InlineData("030001", false)]  // 上市權證的區段不屬於上櫃
+    public void IsWarrantSymbol_Otc(string symbol, bool expected)
+    {
+        Assert.Equal(expected, new TpexStockDataSource(new IsinFetcher(""), NewCache(), TimeProvider.System).IsWarrantSymbol(symbol));
     }
 
     // ── 同時發生的未命中只向上游查詢一次 ──────────────────────────────────────

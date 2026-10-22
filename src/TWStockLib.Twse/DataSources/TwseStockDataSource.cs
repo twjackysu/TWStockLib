@@ -15,6 +15,10 @@ internal sealed class TwseStockDataSource(
     protected override string MarketKeyPrefix => "tse";
     protected override int IsinStrMode => 2;
 
+    /// <summary>上市權證（含牛熊證）：6 碼，以 03～08 開頭，例如 030001、03989C。</summary>
+    protected internal override bool IsWarrantSymbol(string symbol)
+        => symbol.Length == 6 && symbol[0] == '0' && symbol[1] is >= '3' and <= '8';
+
     protected override Task<IReadOnlyList<StockHistory>> FetchMonthAsync(
         string symbol, DateOnly month, CancellationToken ct)
         => CachedMonth(symbol, month, async token =>

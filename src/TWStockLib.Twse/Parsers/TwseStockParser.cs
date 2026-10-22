@@ -16,11 +16,6 @@ internal static class TwseStockParser
     /// <summary>櫃買 st43 的成交量單位是「仟股」、成交金額是「仟元」；證交所 STOCK_DAY 是「股」、「元」。</summary>
     private const int TpexUnitScale = 1000;
 
-    // ISIN 表格欄位依序為：代號及名稱、ISIN、上市日、市場別、產業別、CFICode、備註
-    private const int IsinCodeColumn = 1;
-    private const int IsinListedDateColumn = 2;
-    private const int IsinIndustryColumn = 4;
-    private const int IsinCfiCodeColumn = 5;
 
     /// <summary>MIS 正常回應的 rtcode。</summary>
     private const string MisOkCode = "0000";
@@ -114,7 +109,10 @@ internal static class TwseStockParser
         return MapRows(data, TpexUnitScale);
     }
 
-    /// <summary>解析完整清單（含權證），是否排除權證由呼叫端依 <see cref="StockData.SecurityType"/> 過濾。</summary>
+    /// <summary>
+    /// 解析 ISIN 頁面的完整清單（含權證），是否排除權證由資料來源依代號判斷。表格欄位依序為：
+    /// 代號及名稱、ISIN、上市日、市場別、產業別、CFICode、備註，只取第一欄。
+    /// </summary>
     public static IReadOnlyDictionary<string, StockData> ParseStockList(string html, MarketType market)
     {
         var parser = new HtmlParser();
@@ -141,52 +139,9 @@ internal static class TwseStockParser
         if (parts.Length < 2)
             return false;
 
-        var cells = firstCell.ParentElement?.Children;
-        string Cell(int column) => cells is not null && cells.Length > column ? cells[column].TextContent.Trim() : "";
-        var cfiCode = Cell(IsinCfiCodeColumn);
-
-        stock = new StockData
-        {
-            Symbol = parts[0].Trim(),
-            Name = parts[1].Trim(),
-            Market = market,
-            SecurityType = ToSecurityType(cfiCode),
-            Industry = NullIfEmpty(Cell(IsinIndustryColumn)),
-            Isin = NullIfEmpty(Cell(IsinCodeColumn)),
-            ListedDate = DateOnly.TryParseExact(
-                Cell(IsinListedDateColumn), "yyyy/MM/dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var listed)
-                ? listed
-                : null,
-            CfiCode = NullIfEmpty(cfiCode),
-        };
+        stock = new StockData { Symbol = parts[0].Trim(), Name = parts[1].Trim(), Market = market };
         return true;
     }
-
-    /// <summary>
-    /// 依 CFICode（ISO 10962）的前兩碼判斷證券類型。對照取自證交所與櫃買 ISIN 頁面實際使用的代碼：
-    /// 「RW」開頭即權證，認購、認售與牛熊證都在內——名稱字尾（購 / 售）無法涵蓋牛熊證（如「臺股指凱基5A牛04」）；
-    /// 「CM」在標準中是「其他集合投資工具」，兩個市場目前只有 ETN 使用（<c>CMXXXU</c>）。
-    /// </summary>
-    internal static SecurityType ToSecurityType(string cfiCode)
-    {
-        if (cfiCode.Length < 2)
-            return SecurityType.Unknown;
-
-        return cfiCode[..2] switch
-        {
-            "ES" => SecurityType.CommonStock,
-            "EP" or "EF" => SecurityType.PreferredStock,
-            "ED" => SecurityType.DepositaryReceipt,
-            "CE" => SecurityType.Etf,
-            "CM" => SecurityType.Etn,
-            "CB" or "DA" => SecurityType.BeneficiarySecurity,
-            "RW" => SecurityType.Warrant,
-            _ when cfiCode[0] == 'D' => SecurityType.Bond,
-            _ => SecurityType.Other,
-        };
-    }
-
-    private static string? NullIfEmpty(string text) => text.Length == 0 ? null : text;
 
     #region History Rows
 

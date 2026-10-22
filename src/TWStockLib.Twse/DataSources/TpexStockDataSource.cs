@@ -15,6 +15,9 @@ internal sealed class TpexStockDataSource(
     protected override string MarketKeyPrefix => "otc";
     protected override int IsinStrMode => 4;
 
+    /// <summary>上櫃權證：6 碼，以 7 開頭，例如 700019、72479U。</summary>
+    protected internal override bool IsWarrantSymbol(string symbol) => symbol.Length == 6 && symbol[0] == '7';
+
     protected override Task<IReadOnlyList<StockHistory>> FetchMonthAsync(
         string symbol, DateOnly month, CancellationToken ct)
         => CachedMonth(symbol, month, async token =>

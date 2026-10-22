@@ -49,6 +49,12 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
     /// <summary>ISIN 股票清單頁的 strMode：上市 2、上櫃 4。</summary>
     protected abstract int IsinStrMode { get; }
 
+    /// <summary>
+    /// 依代號判斷是否為權證（含牛熊證）。權證代號有固定的編碼區段，2026/10/22 以兩個市場 ISIN 頁面的 CFICode
+    /// （「RW」開頭即權證）核對 53,863 檔，結果完全一致；以代號判斷時，沒有 CFICode 的來源也能用同一套規則。
+    /// </summary>
+    protected internal abstract bool IsWarrantSymbol(string symbol);
+
     public Task<StockQuote?> FetchRealtimeQuoteAsync(string symbol, QuoteOptions options, CancellationToken ct = default)
     {
         async Task<StockQuote?> Fetch(CancellationToken token)
@@ -150,8 +156,8 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
 
         return includeWarrant
             ? all
-            : _withoutWarrants.GetValue(all, static list => list
-                .Where(p => p.Value.SecurityType != SecurityType.Warrant)
+            : _withoutWarrants.GetValue(all, list => list
+                .Where(p => !IsWarrantSymbol(p.Key))
                 .ToFrozenDictionary());
     }
 

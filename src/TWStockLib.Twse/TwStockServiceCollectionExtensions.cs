@@ -1,4 +1,6 @@
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Http;
+using Microsoft.Extensions.Options;
 using TWStockLib;
 using TWStockLib.Abstractions;
 using TWStockLib.Twse.DataSources;
@@ -20,6 +22,17 @@ public static class TwStockServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton<ICacheService, MemoryCacheService>();
 
+        services.AddOptions<TwStockOptions>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<TwStockOptions>, TwStockOptionsValidator>());
+
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IConfigureOptions<HttpClientFactoryOptions>, TwStockHttpClientSetup>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IPostConfigureOptions<HttpClientFactoryOptions>, TwStockHttpClientSetup>());
+        // 限流狀態放在 Singleton：IHttpClientFactory 會定期換掉 handler，狀態若跟著 handler 走就會歸零
+        services.TryAddSingleton(sp =>
+        {
+            var rateLimit = sp.GetRequiredService<IOptions<TwStockOptions>>().Value.RateLimit;
+            return new PerHostRateLimiter(rateLimit.PermitLimit, rateLimit.Window, sp.GetRequiredService<TimeProvider>());
+        });
         services.TryAddSingleton<IStockHttpFetcher, TwseHttpFetcher>();
 
         // 每市場一個資料來源；新增市場只多註冊一行（OCP）
@@ -27,6 +40,20 @@ public static class TwStockServiceCollectionExtensions
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IStockDataSource, TpexStockDataSource>());
 
         services.TryAddSingleton<IStockMarketService, StockMarketService>();
+        return services;
+    }
+
+    /// <summary>
+    /// 註冊 TWStockLib 資料服務，並以 <paramref name="configure"/> 調整快取時間等設定（見 <see cref="TwStockOptions"/>）。
+    /// 可重複呼叫，每次的 <paramref name="configure"/> 依呼叫順序套用；設定不合法時，第一次取得服務會拋出
+    /// <see cref="OptionsValidationException"/>。
+    /// </summary>
+    public static IServiceCollection AddTwStock(this IServiceCollection services, Action<TwStockOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+
+        services.AddTwStock();
+        services.Configure(configure);
         return services;
     }
 }

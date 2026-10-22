@@ -20,13 +20,13 @@ internal sealed class TwseHttpFetcher : IStockHttpFetcher
 
     public async Task<string> GetStringAsync(string url, CancellationToken ct = default)
     {
-        var client = _httpClientFactory.CreateClient();
+        var client = _httpClientFactory.CreateClient(TwStockOptions.HttpClientName);
         return await client.GetStringAsync(url, ct);
     }
 
     public async Task<string> GetBig5StringAsync(string url, CancellationToken ct = default)
     {
-        var client = _httpClientFactory.CreateClient();
+        var client = _httpClientFactory.CreateClient(TwStockOptions.HttpClientName);
         var response = await client.GetAsync(url, ct);
         response.EnsureSuccessStatusCode();
 

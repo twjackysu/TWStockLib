@@ -17,6 +17,9 @@ public sealed class StockMarketService : IStockMarketService
     /// <summary>MIS 約每 5 秒更新一次，追蹤得更頻繁只會增加被上游限流的風險。</summary>
     private static readonly TimeSpan MinimumWatchInterval = TimeSpan.FromSeconds(5);
 
+    /// <summary>台股代號最長 6 碼（權證、ETF），保留一些餘裕。</summary>
+    private const int MaxSymbolLength = 10;
+
     private readonly IReadOnlyDictionary<MarketType, IStockDataSource> _sources;
     private readonly ILogger<StockMarketService> _logger;
     private readonly TimeProvider _timeProvider;
@@ -39,7 +42,7 @@ public sealed class StockMarketService : IStockMarketService
     public Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(
         string symbol, MarketType market, QuoteOptions? options = null, CancellationToken ct = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
+        ValidateSymbol(symbol);
 
         return QueryAsync(market, $"{symbol} 即時報價",
             async source => await source.FetchRealtimeQuoteAsync(symbol, options ?? QuoteOptions.Default, ct), ct);
@@ -48,7 +51,7 @@ public sealed class StockMarketService : IStockMarketService
     public Task<StockResult<IReadOnlyList<StockHistory>>> GetHistoricalDataAsync(
         string symbol, MarketType market, DateOnly from, DateOnly to, CancellationToken ct = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
+        ValidateSymbol(symbol);
         if (from > to)
             throw new ArgumentException($"起日 {from:yyyy-MM-dd} 晚於迄日 {to:yyyy-MM-dd}。", nameof(from));
 
@@ -81,7 +84,7 @@ public sealed class StockMarketService : IStockMarketService
     public IAsyncEnumerable<StockQuote> WatchAsync(
         string symbol, MarketType market, TimeSpan? interval = null, CancellationToken ct = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
+        ValidateSymbol(symbol);
         if (!_sources.ContainsKey(market))
             throw new ArgumentException($"不支援的市場：{market}", nameof(market));
         var pollInterval = interval ?? MinimumWatchInterval;
@@ -118,6 +121,17 @@ public sealed class StockMarketService : IStockMarketService
 
             await Task.Delay(interval, _timeProvider, ct);
         }
+    }
+
+    /// <summary>
+    /// 代號只接受 1 到 <see cref="MaxSymbolLength"/> 個英文字母或數字（2330、00631L、指數的 t00…）。
+    /// 代號會組進上游 URL：MIS 以「|」分隔多檔，放行任意字元等於讓輸入改寫查詢內容（例如「2330.tw|tse_2317」）。
+    /// </summary>
+    private static void ValidateSymbol(string symbol, [CallerArgumentExpression(nameof(symbol))] string? paramName = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(symbol, paramName);
+        if (symbol.Length > MaxSymbolLength || !symbol.All(char.IsAsciiLetterOrDigit))
+            throw new ArgumentException($"股票代號只能是 1 到 {MaxSymbolLength} 個英文字母或數字：{symbol}", paramName);
     }
 
     /// <summary>

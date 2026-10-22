@@ -263,6 +263,27 @@ public class TwseFamilyDataSourceTests
         Assert.All(quotes, q => Assert.Equal(600.00m, q!.LastPrice));
     }
 
+    // ── 代號跳脫 ──────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Symbols_AreEscapedInUpstreamUrls()
+    {
+        // 正常情況下 StockMarketService 已擋下這類代號；資料來源本身也不讓它改到其他查詢參數
+        var fetcher = new FakeFetcher("""{"msgArray":[],"stat":"OK","data":[],"tables":[]}""");
+        var cache = new MemoryCacheService(new MemoryCache(new MemoryCacheOptions()));
+
+        await new TwseStockDataSource(fetcher, cache, TimeProvider.System)
+            .FetchRealtimeQuoteAsync("2330&delay=1#", QuoteOptions.NoCache);
+        await new TwseStockDataSource(fetcher, cache, TimeProvider.System)
+            .FetchHistoricalDataAsync("2330&date=1", new DateOnly(2025, 9, 1), new DateOnly(2025, 9, 30));
+        await new TpexStockDataSource(fetcher, cache, TimeProvider.System)
+            .FetchHistoricalDataAsync("6510&date=1", new DateOnly(2025, 9, 1), new DateOnly(2025, 9, 30));
+
+        Assert.Contains("ex_ch=tse_2330%26delay%3D1%23.tw&", fetcher.Urls[0]);
+        Assert.Contains("stockNo=2330%26date%3D1", fetcher.Urls[1]);
+        Assert.Contains("code=6510%26date%3D1", fetcher.Urls[2]);
+    }
+
     // ── 歷史資料的快取時間 ────────────────────────────────────────────────────
 
     private sealed class RecordingCache : ICacheService

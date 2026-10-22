@@ -48,7 +48,9 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
         var cacheKey = $"realtime_quote_{Market}_{symbol}";
         async Task<StockQuote?> Fetch(CancellationToken token)
         {
-            var exCh = $"{MarketKeyPrefix}_{symbol}.tw";
+            // 跳脫讓「&」「#」這類字元改不了其他查詢參數；MIS 會先解碼再以「|」分隔多檔，
+            // 擋下「2330.tw|tse_2317」的是 StockMarketService 的代號格式檢查
+            var exCh = $"{MarketKeyPrefix}_{Uri.EscapeDataString(symbol)}.tw";
             var url = $"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={exCh}&json=1&delay=0&_={DateTime.UtcNow.Ticks}";
             var json = await Fetcher.GetStringAsync(url, token);
             return TwseStockParser.ParseRealtimeQuote(json, Market);

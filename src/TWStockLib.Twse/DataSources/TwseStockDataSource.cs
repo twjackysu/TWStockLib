@@ -20,7 +20,7 @@ internal sealed class TwseStockDataSource(
         => CachedMonth(symbol, month, async token =>
         {
             var url = string.Create(CultureInfo.InvariantCulture,
-                $"https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date={month:yyyyMMdd}&stockNo={symbol}");
+                $"https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date={month:yyyyMMdd}&stockNo={Uri.EscapeDataString(symbol)}");
             var json = await Fetcher.GetStringAsync(url, token);
             return TwseStockParser.ParseTwseHistory(json);
         }, ct);

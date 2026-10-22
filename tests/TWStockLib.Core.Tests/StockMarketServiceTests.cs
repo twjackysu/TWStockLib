@@ -120,6 +120,39 @@ public class StockMarketServiceTests
             symbol!, MarketType.TSE, new DateOnly(2025, 9, 1), new DateOnly(2025, 9, 30)));
     }
 
+    [Theory]
+    [InlineData("2330.tw|tse_2317")]   // 會被 MIS 當成多查一檔
+    [InlineData("2330&delay=1")]
+    [InlineData("2330 ")]
+    [InlineData("２３３０")]           // 全形數字
+    [InlineData("12345678901")]       // 超過 10 碼
+    public void MalformedSymbols_AreRejectedBeforeAnyQuery(string symbol)
+    {
+        var tse = FakeSource(MarketType.TSE);
+        var service = BuildService(tse);
+
+        Assert.Throws<ArgumentException>(() => { _ = service.GetRealtimeQuoteAsync(symbol, MarketType.TSE); });
+        Assert.Throws<ArgumentException>(() => { _ = service.GetHistoricalDataAsync(
+            symbol, MarketType.TSE, new DateOnly(2025, 9, 1), new DateOnly(2025, 9, 30)); });
+        Assert.Throws<ArgumentException>(() => service.WatchAsync(symbol, MarketType.TSE));
+        Assert.Empty(tse.ReceivedCalls().Where(c => c.GetMethodInfo().Name != "get_Market"));
+    }
+
+    [Theory]
+    [InlineData("2330")]
+    [InlineData("00631L")]   // ETF
+    [InlineData("t00")]      // 加權指數
+    [InlineData("030001")]   // 權證
+    public async Task WellFormedSymbols_AreQueried(string symbol)
+    {
+        var tse = FakeSource(MarketType.TSE);
+        tse.FetchRealtimeQuoteAsync(symbol, Arg.Any<QuoteOptions>(), Arg.Any<CancellationToken>()).Returns(Quote(1m));
+
+        var result = await BuildService(tse).GetRealtimeQuoteAsync(symbol, MarketType.TSE);
+
+        Assert.True(result.IsSuccess);
+    }
+
     [Fact]
     public void GetHistoricalDataAsync_FromAfterTo_IsRejectedBeforeAnyQuery()
     {

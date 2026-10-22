@@ -325,12 +325,20 @@ public class TwseStockParserTests
     }
 
     [Fact]
-    public void ParseTpexOpenApiStockList_MapsCodeAndName_IncludingWarrants()
+    public void ParseTpexOpenApiStockList_MapsCodeAndName()
     {
-        var list = TwseStockParser.ParseTpexOpenApiStockList(OpenApiFixtures.TpexDailyClose, MarketType.OTC);
+        var list = TwseStockParser.ParseTpexOpenApiStockList(OpenApiFixtures.TpexQuotes, MarketType.OTC);
 
-        Assert.Equal(6, list.Count);
+        Assert.Equal(4, list.Count);
         Assert.Equal(new StockData { Symbol = "6510", Name = "精測", Market = MarketType.OTC }, list["6510"]);
+    }
+
+    [Fact]
+    public void ParseTpexOpenApiWarrantList_MapsCodeAndName()
+    {
+        var list = TwseStockParser.ParseTpexOpenApiWarrantList(OpenApiFixtures.TpexWarrants, MarketType.OTC);
+
+        Assert.Equal(["700019", "72479U"], list.Keys.Order());
         Assert.Equal("擎亞群益5B售01", list["72479U"].Name);
     }
 
@@ -362,6 +370,8 @@ public class TwseStockParserTests
     {
         Assert.Throws<FormatException>(() => TwseStockParser.ParseTwseOpenApiStockList(json, MarketType.TSE));
         Assert.Throws<FormatException>(() => TwseStockParser.ParseTpexOpenApiStockList(json, MarketType.OTC));
+        Assert.Throws<FormatException>(() => TwseStockParser.ParseTpexOpenApiWarrantList(json, MarketType.OTC));
+        Assert.Throws<FormatException>(() => TwseStockParser.ParseTwseOpenApiWarrantList(json, MarketType.TSE, new DateOnly(2026, 10, 22)));
     }
 
     [Fact]

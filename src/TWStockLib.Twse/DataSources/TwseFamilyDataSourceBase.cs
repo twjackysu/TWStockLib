@@ -31,6 +31,9 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
     private readonly ConditionalWeakTable<IReadOnlyDictionary<string, StockData>, IReadOnlyDictionary<string, StockData>>
         _withoutWarrants = new();
 
+    // OpenAPI 上次合併的含權證清單；兩份快取都還是同一個實例時直接沿用，多執行緒同時換新頂多重算一次
+    private MergedStockList? _withWarrants;
+
     // options 未指定（直接 new 的測試）時使用 TwStockOptions 的預設快取時間
     protected TwseFamilyDataSourceBase(
         IStockHttpFetcher fetcher, ICacheService cache, TimeProvider timeProvider, IOptions<TwStockOptions>? options)
@@ -168,17 +171,55 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
         }
     }
 
-    /// <summary>從 OpenAPI 取得此市場的清單；端點與是否含權證的處理各市場不同。</summary>
-    protected abstract Task<IReadOnlyDictionary<string, StockData>> FetchOpenApiStockListAsync(
-        bool includeWarrant, CancellationToken ct);
+    /// <summary>OpenAPI 上此市場權證以外的證券清單（不含權證）。</summary>
+    protected abstract string OpenApiStockListUrl { get; }
+
+    /// <summary>OpenAPI 上此市場的權證清單。</summary>
+    protected abstract string OpenApiWarrantListUrl { get; }
+
+    protected abstract IReadOnlyDictionary<string, StockData> ParseOpenApiStockList(string json);
+
+    protected abstract IReadOnlyDictionary<string, StockData> ParseOpenApiWarrantList(string json);
+
+    /// <summary>
+    /// OpenAPI 的權證與其他證券分屬不同端點，權證清單大得多（上市解壓後約 45 MB、上櫃約 3.8 MB），只在需要時下載。
+    /// 兩份分開快取、各自只下載一次，合併結果依兩份快取的實例記住。
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, StockData>> FetchOpenApiStockListAsync(
+        bool includeWarrant, CancellationToken ct)
+    {
+        var listed = await CachedStockList($"stock_list_openapi_{Market}",
+            async token => ParseOpenApiStockList(await Fetcher.GetStringAsync(OpenApiStockListUrl, token)), ct);
+        if (!includeWarrant)
+            return listed;
+
+        var warrants = await CachedStockList($"stock_list_openapi_{Market}_warrants",
+            async token => ParseOpenApiWarrantList(await Fetcher.GetStringAsync(OpenApiWarrantListUrl, token)), ct);
+
+        var merged = _withWarrants;
+        if (merged is null || !ReferenceEquals(merged.Listed, listed) || !ReferenceEquals(merged.Warrants, warrants))
+            _withWarrants = merged = new MergedStockList(listed, warrants);
+        return merged.All;
+    }
+
+    /// <summary>OpenAPI 的兩份清單合併後的結果，連同合併時用的兩份快取實例。</summary>
+    private sealed class MergedStockList(
+        IReadOnlyDictionary<string, StockData> listed, IReadOnlyDictionary<string, StockData> warrants)
+    {
+        public IReadOnlyDictionary<string, StockData> Listed { get; } = listed;
+        public IReadOnlyDictionary<string, StockData> Warrants { get; } = warrants;
+        public IReadOnlyDictionary<string, StockData> All { get; } = listed.Concat(warrants)
+            .DistinctBy(p => p.Key)
+            .ToFrozenDictionary();
+    }
 
     /// <summary>以股票清單的快取時間快取；<paramref name="fetch"/> 收到的是合併並行查詢後共用的 token。</summary>
-    protected Task<IReadOnlyDictionary<string, StockData>> CachedStockList(
+    private Task<IReadOnlyDictionary<string, StockData>> CachedStockList(
         string cacheKey, Func<CancellationToken, Task<IReadOnlyDictionary<string, StockData>>> fetch, CancellationToken ct)
         => Cache.GetOrSetAsync(cacheKey, fetch, _options.StockListCacheDuration, ct);
 
     /// <summary>過濾掉權證；同一份清單只過濾一次。</summary>
-    protected IReadOnlyDictionary<string, StockData> WithoutWarrants(IReadOnlyDictionary<string, StockData> list)
+    private IReadOnlyDictionary<string, StockData> WithoutWarrants(IReadOnlyDictionary<string, StockData> list)
         => _withoutWarrants.GetValue(list, all => all
             .Where(p => !IsWarrantSymbol(p.Key))
             .ToFrozenDictionary());

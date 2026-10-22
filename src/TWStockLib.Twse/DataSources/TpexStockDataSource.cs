@@ -18,17 +18,20 @@ internal sealed class TpexStockDataSource(
     /// <summary>上櫃權證：6 碼，以 7 開頭，例如 700019、72479U。</summary>
     protected internal override bool IsWarrantSymbol(string symbol) => symbol.Length == 6 && symbol[0] == '7';
 
-    /// <summary>上櫃股票行情含權證，只下載一次（約 5 MB），不含權證的版本在讀取時過濾。</summary>
-    protected override async Task<IReadOnlyDictionary<string, StockData>> FetchOpenApiStockListAsync(
-        bool includeWarrant, CancellationToken ct)
-    {
-        var all = await CachedStockList($"stock_list_openapi_{Market}", async token =>
-        {
-            var json = await Fetcher.GetStringAsync("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes", token);
-            return TwseStockParser.ParseTpexOpenApiStockList(json, Market);
-        }, ct);
-        return includeWarrant ? all : WithoutWarrants(all);
-    }
+    /// <summary>
+    /// 上櫃股票收盤行情：不含權證（約 360 KB）。另有含權證的「上櫃股票行情」（約 5 MB），
+    /// 2026/10/22 晚間實測傳到一半常被上游中斷，不用它。
+    /// </summary>
+    protected override string OpenApiStockListUrl => "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes";
+
+    /// <summary>上櫃權證收盤行情日報表（約 3.8 MB）。</summary>
+    protected override string OpenApiWarrantListUrl => "https://www.tpex.org.tw/openapi/v1/tpex_warrant_daily_quts";
+
+    protected override IReadOnlyDictionary<string, StockData> ParseOpenApiStockList(string json)
+        => TwseStockParser.ParseTpexOpenApiStockList(json, Market);
+
+    protected override IReadOnlyDictionary<string, StockData> ParseOpenApiWarrantList(string json)
+        => TwseStockParser.ParseTpexOpenApiWarrantList(json, Market);
 
     protected override Task<IReadOnlyList<StockHistory>> FetchMonthAsync(
         string symbol, DateOnly month, CancellationToken ct)

@@ -152,9 +152,13 @@ internal static class TwseStockParser
     public static IReadOnlyDictionary<string, StockData> ParseTwseOpenApiStockList(string json, MarketType market)
         => ParseOpenApiStockList(json, market, codeKey: "Code", nameKey: "Name", keep: null);
 
-    /// <summary>櫃買 OpenAPI 上櫃股票行情（<c>tpex_mainboard_daily_close_quotes</c>）：每一檔有行情的上櫃證券，含權證。</summary>
+    /// <summary>櫃買 OpenAPI 上櫃股票收盤行情（<c>tpex_mainboard_quotes</c>）：每一檔有行情的上櫃證券，不含權證。</summary>
     public static IReadOnlyDictionary<string, StockData> ParseTpexOpenApiStockList(string json, MarketType market)
         => ParseOpenApiStockList(json, market, codeKey: "SecuritiesCompanyCode", nameKey: "CompanyName", keep: null);
+
+    /// <summary>櫃買 OpenAPI 上櫃權證收盤行情日報表（<c>tpex_warrant_daily_quts</c>）：每一檔還在交易的上櫃權證。</summary>
+    public static IReadOnlyDictionary<string, StockData> ParseTpexOpenApiWarrantList(string json, MarketType market)
+        => ParseOpenApiStockList(json, market, codeKey: "Code", nameKey: "Name", keep: null);
 
     /// <summary>
     /// 證交所 OpenAPI 上市權證基本資料彙總表（<c>t187ap37_L</c>）：含已到期的權證（2026/10/22 約 4.5 萬筆中 6 千多筆），

@@ -140,7 +140,8 @@ public class TwseFamilyDataSourceTests
     private const string OtcIsinUrl = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4";
     private const string TseStockDayAllUrl = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL";
     private const string TseWarrantsUrl = "https://openapi.twse.com.tw/v1/opendata/t187ap37_L";
-    private const string TpexDailyCloseUrl = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes";
+    private const string TpexQuotesUrl = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes";
+    private const string TpexWarrantsUrl = "https://www.tpex.org.tw/openapi/v1/tpex_warrant_daily_quts";
 
     private static readonly StockListOptions Isin = new() { Source = StockListSource.Isin };
     private static readonly StockListOptions IsinWithWarrants = new() { Source = StockListSource.Isin, IncludeWarrant = true };
@@ -212,18 +213,19 @@ public class TwseFamilyDataSourceTests
     }
 
     [Fact]
-    public async Task FetchStockListAsync_OtcOpenApi_OneDownloadForBothViews()
+    public async Task FetchStockListAsync_OtcOpenApi_DownloadsTheWarrantsOnlyWhenAsked()
     {
-        var fetcher = new ListFetcher((TpexDailyCloseUrl, OpenApiFixtures.TpexDailyClose));
+        var fetcher = new ListFetcher((TpexQuotesUrl, OpenApiFixtures.TpexQuotes), (TpexWarrantsUrl, OpenApiFixtures.TpexWarrants));
         var source = new TpexStockDataSource(fetcher, NewCache(), Oct22);
 
         var withoutWarrants = await source.FetchStockListAsync();
+        Assert.Equal([TpexQuotesUrl], fetcher.Urls);
         var all = await source.FetchStockListAsync(includeWarrant: true);
 
         Assert.Equal(["00679B", "020001", "6510", "8349A"], withoutWarrants.Keys.Order());
-        Assert.Equal(6, all.Count);
+        Assert.Equal(["00679B", "020001", "6510", "700019", "72479U", "8349A"], all.Keys.Order());
         Assert.All(all.Values, s => Assert.Equal(MarketType.OTC, s.Market));
-        Assert.Equal([TpexDailyCloseUrl], fetcher.Urls);
+        Assert.Equal([TpexQuotesUrl, TpexWarrantsUrl], fetcher.Urls);
     }
 
     [Fact]
@@ -353,11 +355,11 @@ public class TwseFamilyDataSourceTests
     [Fact]
     public async Task FetchStockListAsync_TenParallelFirstCalls_DownloadTheListOnce()
     {
-        var fetcher = new SlowFetcher("", OpenApiFixtures.TpexDailyClose);
+        var fetcher = new SlowFetcher("", OpenApiFixtures.TpexQuotes);
         var source = new TpexStockDataSource(fetcher, NewCache(), TimeProvider.System);
 
         var callers = Enumerable.Range(0, 10)
-            .Select(i => Task.Run(() => source.FetchStockListAsync(includeWarrant: i % 2 == 0)))
+            .Select(_ => Task.Run(() => source.FetchStockListAsync()))
             .ToArray();
         while (fetcher.Requests == 0)
             await Task.Delay(10);
@@ -366,8 +368,8 @@ public class TwseFamilyDataSourceTests
         var lists = await Task.WhenAll(callers);
 
         Assert.Equal(1, fetcher.Requests);
-        Assert.All(lists.Where((_, i) => i % 2 == 0), l => Assert.Equal(6, l.Count));
-        Assert.All(lists.Where((_, i) => i % 2 == 1), l => Assert.Equal(4, l.Count));
+        Assert.All(lists, l => Assert.Same(lists[0], l));
+        Assert.Equal(4, lists[0].Count);
     }
 
     [Fact]

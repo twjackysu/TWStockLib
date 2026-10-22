@@ -38,6 +38,11 @@ jobs:
           --logger trx
           --results-directory TestResults
 
+      # 打包時以 Directory.Build.targets 的 package validation 比對 NuGet 上的基準版本，
+      # 不小心破壞公開 API 的 PR 會在這一步失敗
+      - name: Pack (API compatibility check)
+        run: dotnet pack --no-build --configuration Release --output ./nupkg
+
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()

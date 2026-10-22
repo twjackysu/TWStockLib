@@ -9,6 +9,8 @@
 
   <!-- 共用的 NuGet 套件 metadata（僅 IsPackable 的專案會用到） -->
   <PropertyGroup>
+    <!-- 兩個套件一起發佈、版本一致，版號只在這裡改（發佈時 publish.yml 以 -p:Version 覆寫） -->
+    <Version>3.0.0</Version>
     <Authors>JackySu</Authors>
     <Company>JackySu</Company>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -18,17 +20,22 @@
     <PackageTags>stock;taiwan;finance;twse;tpex</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
 
-    <!-- SourceLink / symbols：發佈時帶原始碼除錯資訊 -->
+    <!-- SourceLink / symbols：發佈時帶原始碼除錯資訊。
+         .NET 8+ SDK 已內建 SourceLink（含 GitHub），不必再參考 Microsoft.SourceLink.GitHub。 -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
 
+  <!-- CI 建置：PDB 內路徑正規化為 /_/，產出可重現（deterministic）的套件 -->
+  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
   <!--
     註：IsPackable 由各 csproj 設定，於本檔（Directory.Build.props，最早匯入）尚不可見，
-    因此「僅可打包專案」的設定（XML 文件、SourceLink）改放在 Directory.Build.targets
-    （最後匯入，IsPackable 已就緒）。
+    因此「僅可打包專案」的設定改放在 Directory.Build.targets（最後匯入，IsPackable 已就緒）。
   -->
 
 </Project>

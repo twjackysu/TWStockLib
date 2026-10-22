@@ -149,6 +149,27 @@ public interface IStockMarketService
   再依 `StockData.SecurityType` 過濾，介面不必新增成員；以集合運算式 `[SecurityType.Etf]` 呼叫時不會與 `bool` 多載混淆。
 - 選項用 `QuoteOptions`（`Default` / `NoCache`）而非 `bool` 旗標參數：新增選項不必再加多載。
 
+3.1 新增（只加不改，既有成員的簽章不變）：
+
+```csharp
+// 批次報價與多檔追蹤：同一市場合併查詢
+Task<IReadOnlyDictionary<string, StockResult<StockQuote>>> GetRealtimeQuotesAsync(
+    IEnumerable<(string Symbol, MarketType Market)> symbols, QuoteOptions? options = null, CancellationToken ct = default);
+IAsyncEnumerable<StockQuote> WatchAsync(
+    IEnumerable<(string Symbol, MarketType Market)> symbols, TimeSpan? interval = null, CancellationToken ct = default);
+
+// 不指定市場：依股票清單判斷上市或上櫃
+Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(string symbol, QuoteOptions? options = null, CancellationToken ct = default);
+Task<IReadOnlyDictionary<string, StockResult<StockQuote>>> GetRealtimeQuotesAsync(
+    IEnumerable<string> symbols, QuoteOptions? options = null, CancellationToken ct = default);
+Task<StockResult<IReadOnlyList<StockHistory>>> GetHistoricalDataAsync(
+    string symbol, DateOnly from, DateOnly to, CancellationToken ct = default);
+IAsyncEnumerable<StockQuote> WatchAsync(string symbol, TimeSpan? interval = null, CancellationToken ct = default);
+IAsyncEnumerable<StockQuote> WatchAsync(IEnumerable<string> symbols, TimeSpan? interval = null, CancellationToken ct = default);
+```
+
+設計取捨見 [10. 成交價追蹤](#10-成交價追蹤watchasync) 與 [10.1 批次報價與自動判斷市場](#101-批次報價與自動判斷市場)。
+
 擴充點集中在 `TWStockLib.Abstractions`：
 
 ```csharp
@@ -156,6 +177,9 @@ public interface IStockDataSource
 {
     MarketType Market { get; }
     Task<StockQuote?> FetchRealtimeQuoteAsync(string symbol, QuoteOptions options, CancellationToken ct = default);
+    // 3.1：預設實作逐檔呼叫 FetchRealtimeQuoteAsync，既有的第三方來源不必修改；內建來源覆寫為每 50 檔一個 MIS 請求
+    Task<IReadOnlyDictionary<string, StockQuote>> FetchRealtimeQuotesAsync(
+        IReadOnlyList<string> symbols, QuoteOptions options, CancellationToken ct = default) { /* 逐檔 */ }
     Task<IReadOnlyList<StockHistory>> FetchHistoricalDataAsync(string symbol, DateOnly from, DateOnly to, CancellationToken ct = default);
     Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(bool includeWarrant = false, CancellationToken ct = default);
 }
@@ -213,7 +237,11 @@ public sealed class StockResult<T>
 哪些情況**不**收斂成 Result：
 
 - **呼叫端取消**：照 .NET 慣例拋出 `OperationCanceledException`。
-- **呼叫端程式錯誤**（空白代號、起日晚於迄日、過短的追蹤間隔）：在呼叫當下拋出 `ArgumentException`。
+- **呼叫端程式錯誤**（空白或格式不合法的代號、起日晚於迄日、過短的追蹤間隔、同一代號指定兩個市場）：在呼叫當下拋出 `ArgumentException`。
+
+代號格式（3.1 起）：只接受 1 到 10 個 ASCII 英文字母或數字。代號會組進上游 URL，MIS 又以「|」分隔多檔，
+放行任意字元等於讓輸入改寫查詢（`2330.tw|tse_2317` 會多查一檔）。資料來源另以 `Uri.EscapeDataString` 跳脫代號，
+讓「&」「#」改不了其他查詢參數；但 MIS 會先解碼再分隔，實測 `%7C` 一樣被當成分隔符號，所以真正擋下「|」的是格式檢查。
 
 > 採用理由：對齊 DataAnalysisLibrary 的 `QueryResult<T>`，呼叫端不用在每次呼叫包 try-catch，網路與格式錯誤都收斂成一致回傳；
 > 但取消與參數錯誤屬於呼叫端自己的控制流程，維持 .NET 的例外慣例。
@@ -268,6 +296,9 @@ public static IServiceCollection AddTwStock(this IServiceCollection services)
 - 解析一律使用 `InvariantCulture`；上櫃的「仟股 / 仟元」在解析時換算成與上市一致的「股 / 元」；
   格式不符的列直接略過，不以預設值捏造資料。
 - 測試把證交所 / 櫃買的真實回應存成 fixture 字串，餵進 Parser 斷言輸出，**不需要網路、穩定、快**。
+- MIS 報價（3.1 起）：`ParseRealtimeQuotes` 解析 `msgArray` 的每一筆，略過代號（`c`）為空的佔位資料
+  （查無代號、市場錯誤都是這筆）；`rtcode` 不是 `0000` 時拋出 `HttpRequestException`（`UPSTREAM_ERROR`），
+  例如一次查太多檔時的 9999「參數不足」——此時沒有 `msgArray`，不能當成每一檔都查無資料。
 
 ### HttpClient 管線與限流（3.1 起）
 
@@ -349,6 +380,49 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 - 輪詢間隔走 `TimeProvider`，測試以 `FakeTimeProvider` 推進時間，不必真的等待。
 - 服務本身因此不再有任何狀態。
 
+多檔追蹤（3.1 起）`WatchAsync(IEnumerable<(Symbol, Market)>)`：每檔各開一個 `WatchAsync` 時，每檔每輪一個請求，
+受每主機 3 個 / 5 秒的限流，10 檔一輪要約 15 秒。多檔多載每一輪以批次報價一次查完，同一市場每 50 檔一個請求。
+
+- 每一檔第一次查到時回傳一次，之後只回傳變動的那幾檔；同一輪內依傳入順序，型別仍是 `StockQuote`（`Symbol` 已足以分辨）。
+- **還沒查到過**的代號回 `NOT_FOUND` 時拋出——與單檔一致，打錯的代號不該默默被忽略；
+  **已經查到過**的代號之後查無資料只記錄、不中斷：一檔的異常不該讓其他幾十檔的追蹤跟著結束。
+- 某個市場暫時失敗只影響該市場的代號，記錄（同一個失敗合併成一筆）後下一輪重試。
+- 單檔多載的行為完全不變（仍走單檔查詢與單檔快取鍵）。
+
+### 10.1 批次報價與自動判斷市場
+
+**批次報價的回傳型別**：`IReadOnlyDictionary<string, StockResult<StockQuote>>`，每個傳入的代號恰好一筆。
+
+- 考慮過 `StockResult<IReadOnlyDictionary<string, StockQuote>>`（整批成功 / 失敗、查無的代號不在字典中）：
+  一個市場失敗就丟掉另一個市場的結果，查無資料也只能靠「不在字典中」表達。改成每檔一個 `StockResult`，
+  查無資料、不支援的市場、上游失敗都用既有的錯誤碼表達，呼叫端的處理方式與單檔查詢一樣。
+- 考慮過依輸入順序回傳 `IReadOnlyList<StockResult<StockQuote>>`：失敗的結果沒有代號，呼叫端得自己用索引對回去。
+  以代號為 key 最直接；同一代號不可能同時屬於兩個市場，指定了兩個市場直接拋 `ArgumentException`。
+- 不另外包一個外層 `StockResult`：所有失敗都是逐檔的，沒有「整批失敗」這種狀態。
+- 上游失敗時，同一市場這次查詢的每一檔共用同一個失敗結果：資料來源的批次方法是全有或全無的
+  （內建來源某一塊失敗就整批拋出），不在介面上暴露分塊細節。成功的塊已寫入快取，重試時不會重查。
+
+**資料來源**：`IStockDataSource.FetchRealtimeQuotesAsync` 以預設介面實作逐檔呼叫單檔方法，第三方來源照常編譯、行為正確，
+只是沒有省下請求。內建來源覆寫：
+
+- 每 50 檔一個 MIS 請求（`ex_ch` 以「|」串接，上游依序每檔回一筆）。實測（2026-10）150 檔（URL 約 1.9 KB）可以、
+  200 檔（約 2.5 KB）回 rtcode 9999「參數不足」；取 50 留足餘裕，6 碼代號的 URL 也只有約 0.8 KB。
+- 快取仍以每一檔為單位（與單檔共用鍵）：先逐檔查快取，只把沒快取的代號送上游，查到的再逐檔寫回。
+  `ICacheService` 沒有「只讀」的方法，以「工廠回 `null`」的 `GetOrSetAsync` 查快取——`null` 依約定不會被快取。
+- 回應依代號（`c`）對回查詢，不依位置；MIS 的代號區分大小寫（`00631L` 查得到、`00631l` 查不到），回應與查詢完全相同。
+- **不把上市與上櫃合併成同一個請求**：MIS 其實接受 `tse_2330.tw|otc_6510.tw`，但那要讓一個資料來源替另一個市場查詢，
+  破壞「每市場一個來源」（OCP）。混合清單每輪多一個請求，在限流額度內，划算。
+
+**自動判斷市場**：不指定 `MarketType` 的多載依股票清單判斷代號屬於哪個市場。
+
+- 清單用 `GetStockListAsync(market, includeWarrant: true)`：內建來源只快取一份完整清單（見 §8），與呼叫端的清單查詢共用同一次下載（預設快取 1 天），不另外維護對照表。
+- 依註冊順序逐一取得清單，全部找到就停：只查上市股票時不會下載上櫃清單。第一次呼叫的成本是下載清單（上市約 9.7 MB，實測 12～78 秒，其中 AngleSharp 解析約 1.5 秒，其餘是傳輸；上櫃約 3.2 MB），
+  文件建議啟動時以 `GetAllStockListAsync()` 預熱。
+- 含權證：權證也能自動判斷，且內建來源含不含權證是同一份快取，不會多下載；查字典是 O(1)，上市清單 4 萬筆（九成以上是權證）也無妨。
+  指數（`t00`）不在 ISIN 清單中，回傳 `NOT_FOUND`，請改用指定市場的多載。
+- 有清單取得失敗、其他清單又找不到時，回傳該失敗而非 `NOT_FOUND`：代號可能就在沒取得的那份清單裡。
+- 不公開「查代號屬於哪個市場」的方法：`GetStockListAsync` / `GetAllStockListAsync` 已能做到，多一個公開成員就多一個 SemVer 承諾。
+
 ---
 
 ## 11. 設計模式總表
@@ -407,6 +481,10 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 | 清單重複下載 | 含 / 不含權證各下載解析一次數 MB 的 ISIN 頁 | 快取完整清單，讀取時過濾 |
 | 並行未命中 | 同時的 N 個查詢各打一次上游 | `MemoryCacheService` single-flight，取消只影響自己 |
 | 清單資訊太少 | 只有代號、名稱、市場別；權證以外無法分類 | `SecurityType`、`Industry`、`Isin`、`ListedDate`、`CfiCode`，可依類型過濾 |
+| 多檔報價很慢 | 一檔一個 MIS 請求，加上限流後 10 檔約 15 秒 | `GetRealtimeQuotesAsync` / 多檔 `WatchAsync`，同一市場每 50 檔一個請求 |
+| 一定要知道市場 | 每個查詢都要傳 `MarketType` | 不指定市場的多載，依快取的股票清單判斷 |
+| 代號直接組進 URL | `2330.tw\|tse_2317` 會多查一檔 | 代號格式檢查（英數字、最多 10 碼）+ URL 跳脫 |
+| MIS 拒絕查詢被當成查無資料 | `rtcode` 9999 時回 `NOT_FOUND`，`WatchAsync` 因此結束 | `UPSTREAM_ERROR`，追蹤會重試 |
 
 ---
 
@@ -434,3 +512,5 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 - ❌ 不抽象 `ICacheService` 以外的儲存後端 —— `MemoryCache` 夠用，需要 Redis 再說。
 - ❌ 不內建重試 / 斷路器 —— 只提供具名 HttpClient 讓使用者自己加，避免強迫相依 Polly，也避免替使用者決定重試策略。
 - ❌ 不提供逐主機的限流設定 —— 四個上游主機共用同一組 `PermitLimit` / `Window`，各自計算；目前沒有個別調整的需求。
+- ❌ 不把上市與上櫃的報價合併成同一個 MIS 請求 —— 會讓一個資料來源替別的市場查詢；混合清單每輪多一個請求而已。
+- ❌ 自動判斷市場不涵蓋指數 —— `t00` 等不在 ISIN 清單中，另建對照表得自己維護；指數請指定市場。

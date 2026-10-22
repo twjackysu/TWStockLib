@@ -1,3 +1,5 @@
+using System.Collections.Frozen;
+
 namespace TWStockLib.Abstractions;
 
 /// <summary>
@@ -12,6 +14,27 @@ public interface IStockDataSource
 
     /// <summary>取得即時報價；查無資料回 <c>null</c>。內部有快取的來源應遵守 <see cref="QuoteOptions.BypassCache"/>。</summary>
     Task<StockQuote?> FetchRealtimeQuoteAsync(string symbol, QuoteOptions options, CancellationToken ct = default);
+
+    /// <summary>
+    /// 一次取得多檔即時報價（<paramref name="symbols"/> 不重複、格式已檢查過），回傳以傳入的代號為 key 的字典；
+    /// 查無資料的代號不放進結果。任何一次上游查詢失敗就拋出例外，整批視為失敗。
+    /// 內部有快取的來源應遵守 <see cref="QuoteOptions.BypassCache"/>，並以每一檔為單位快取。
+    /// </summary>
+    /// <remarks>
+    /// 預設實作逐檔呼叫 <see cref="FetchRealtimeQuoteAsync"/>，既有的實作不必修改；
+    /// 上游支援一次查多檔的來源應覆寫，以減少請求數。
+    /// </remarks>
+    async Task<IReadOnlyDictionary<string, StockQuote>> FetchRealtimeQuotesAsync(
+        IReadOnlyList<string> symbols, QuoteOptions options, CancellationToken ct = default)
+    {
+        var quotes = new Dictionary<string, StockQuote>(symbols.Count);
+        foreach (var symbol in symbols)
+        {
+            if (await FetchRealtimeQuoteAsync(symbol, options, ct) is { } quote)
+                quotes[symbol] = quote;
+        }
+        return quotes.ToFrozenDictionary();
+    }
 
     /// <summary>取得 <paramref name="from"/> 到 <paramref name="to"/>（含）之間的歷史資料，依日期排序。</summary>
     Task<IReadOnlyList<StockHistory>> FetchHistoricalDataAsync(

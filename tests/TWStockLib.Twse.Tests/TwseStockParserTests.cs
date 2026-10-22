@@ -50,6 +50,53 @@ public class TwseStockParserTests
         Assert.Null(TwseStockParser.ParseRealtimeQuote(json, MarketType.OTC));
     }
 
+    // 以 ex_ch=tse_2330.tw|tse_9999.tw|otc_2330.tw|tse_2317.tw 查詢的實際回應（節錄欄位）：
+    // 每個 ex_ch 依序一筆，查無代號與市場錯誤的那兩筆是佔位資料
+    private const string MultiQuoteJson = """
+    {"msgArray":[
+        {"c":"2330","ch":"2330.tw","ex":"tse","n":"台積電","z":"2385.0000","y":"2420.0000","tlong":"1792650600000"},
+        {"tv":"-","s":"-","c":"","z":"-"},
+        {"tv":"-","s":"-","c":"","z":"-"},
+        {"c":"2317","ch":"2317.tw","ex":"tse","n":"鴻海","z":"245.0000","y":"250.0000","tlong":"1792650600000"}
+    ],"rtcode":"0000","rtmessage":"OK"}
+    """;
+
+    [Fact]
+    public void ParseRealtimeQuotes_ParsesEveryItem_AndSkipsPlaceholders()
+    {
+        var quotes = TwseStockParser.ParseRealtimeQuotes(MultiQuoteJson, MarketType.TSE);
+
+        Assert.Equal(["2330", "2317"], quotes.Select(q => q.Symbol));
+        Assert.Equal([2385.0000m, 245.0000m], quotes.Select(q => q.LastPrice!.Value));
+        Assert.Equal("鴻海", quotes[1].Name);
+        Assert.All(quotes, q => Assert.Equal(MarketType.TSE, q.Market));
+    }
+
+    [Fact]
+    public void ParseRealtimeQuotes_OnlyPlaceholders_ReturnsEmpty()
+    {
+        var json = """{"msgArray":[{"tv":"-","c":"","z":"-"},{"tv":"-","c":"","z":"-"}],"rtcode":"0000","rtmessage":"OK"}""";
+
+        Assert.Empty(TwseStockParser.ParseRealtimeQuotes(json, MarketType.TSE));
+    }
+
+    [Fact]
+    public void ParseRealtimeQuotes_ARejectedQuery_Throws_InsteadOfReportingEverySymbolAsNotFound()
+    {
+        // 一次查 200 檔時 MIS 的實際回應：沒有 msgArray
+        var json = """{"rtcode":"9999","rtmessage":"參數不足"}""";
+
+        var error = Assert.Throws<HttpRequestException>(() => TwseStockParser.ParseRealtimeQuotes(json, MarketType.TSE));
+        Assert.Contains("9999", error.Message);
+        Assert.Throws<HttpRequestException>(() => TwseStockParser.ParseRealtimeQuote(json, MarketType.TSE));
+    }
+
+    [Fact]
+    public void ParseRealtimeQuote_TakesTheFirstRealItem()
+    {
+        Assert.Equal("2330", TwseStockParser.ParseRealtimeQuote(MultiQuoteJson, MarketType.TSE)!.Symbol);
+    }
+
     [Fact]
     public void ParseRealtimeQuote_DashValues_BecomeNull()
     {

@@ -1,4 +1,4 @@
-namespace TWStockLib.Models;
+namespace TWStockLib;
 
 /// <summary>即時報價。數量單位為「張」。</summary>
 public sealed record StockQuote

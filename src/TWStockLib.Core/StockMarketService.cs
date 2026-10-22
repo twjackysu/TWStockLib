@@ -3,9 +3,8 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using TWStockLib.Abstractions;
-using TWStockLib.Models;
 
-namespace TWStockLib.Services;
+namespace TWStockLib;
 
 /// <summary>
 /// 對外門面（Facade）：依 <see cref="MarketType"/> 路由到對應的 <see cref="IStockDataSource"/>，

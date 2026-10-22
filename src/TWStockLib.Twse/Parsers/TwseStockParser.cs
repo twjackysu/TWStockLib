@@ -4,7 +4,6 @@ using System.Globalization;
 using System.Text.Json;
 using AngleSharp.Dom;
 using AngleSharp.Html.Parser;
-using TWStockLib.Models;
 
 namespace TWStockLib.Twse.Parsers;
 

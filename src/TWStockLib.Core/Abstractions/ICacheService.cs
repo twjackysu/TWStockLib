@@ -1,4 +1,4 @@
-namespace TWStockLib.Cache;
+namespace TWStockLib.Abstractions;
 
 /// <summary>資料來源使用的快取。<c>null</c> 代表查無資料，不會被快取。</summary>
 public interface ICacheService

@@ -1,6 +1,4 @@
-using TWStockLib.Models;
-
-namespace TWStockLib.Services;
+namespace TWStockLib;
 
 /// <summary><see cref="IStockMarketService"/> 的便利多載。</summary>
 public static class StockMarketServiceExtensions

@@ -1,6 +1,4 @@
-using TWStockLib.Models;
-
-namespace TWStockLib.Services;
+namespace TWStockLib;
 
 /// <summary>
 /// 台灣股市資料服務的對外介面：即時報價、歷史資料、股票清單與成交價追蹤。

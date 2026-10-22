@@ -1,6 +1,6 @@
 using System.Globalization;
 using Microsoft.Extensions.Caching.Memory;
-using TWStockLib.Cache;
+using TWStockLib.Abstractions;
 using TWStockLib.Twse.DataSources;
 using TWStockLib.Twse.Http;
 

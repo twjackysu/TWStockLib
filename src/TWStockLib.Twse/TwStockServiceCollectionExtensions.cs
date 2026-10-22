@@ -1,13 +1,13 @@
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using TWStockLib;
 using TWStockLib.Abstractions;
-using TWStockLib.Cache;
 using TWStockLib.Twse.DataSources;
 using TWStockLib.Twse.Http;
 
-namespace TWStockLib.Services;
+// 與 AddHttpClient、AddMemoryCache 等擴充方法放在同一個命名空間，註冊時不必另外 using
+namespace Microsoft.Extensions.DependencyInjection;
 
-public static class ServiceCollectionExtensions
+public static class TwStockServiceCollectionExtensions
 {
     /// <summary>
     /// 註冊 TWStockLib 證交所（TSE）/ 櫃買（OTC）資料服務。重複呼叫不會重複註冊；
@@ -26,15 +26,7 @@ public static class ServiceCollectionExtensions
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IStockDataSource, TwseStockDataSource>());
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IStockDataSource, TpexStockDataSource>());
 
-        // 價格訂閱存在服務實例上，必須是 Singleton，訂閱才不會隨 scope（例如每個 HTTP request）消失
         services.TryAddSingleton<IStockMarketService, StockMarketService>();
         return services;
     }
-
-    /// <summary>
-    /// 舊名稱，保留相容。請改用 <see cref="AddTwStock"/>。
-    /// </summary>
-    [Obsolete("請改用 AddTwStock()。此方法將於未來版本移除。")]
-    public static IServiceCollection AddStockServices(this IServiceCollection services)
-        => services.AddTwStock();
 }

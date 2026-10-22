@@ -1,11 +1,9 @@
 using Microsoft.Extensions.DependencyInjection;
 using TWStockLib.Abstractions;
-using TWStockLib.Cache;
-using TWStockLib.Services;
 
 namespace TWStockLib.Twse.Tests;
 
-public class ServiceCollectionExtensionsTests
+public class TwStockServiceCollectionExtensionsTests
 {
     private static ServiceProvider Build(Action<IServiceCollection> register)
     {

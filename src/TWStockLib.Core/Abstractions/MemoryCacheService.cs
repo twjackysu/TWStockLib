@@ -1,6 +1,6 @@
 using Microsoft.Extensions.Caching.Memory;
 
-namespace TWStockLib.Cache;
+namespace TWStockLib.Abstractions;
 
 /// <summary>以 <see cref="IMemoryCache"/> 實作的 <see cref="ICacheService"/>。</summary>
 public sealed class MemoryCacheService(IMemoryCache memoryCache) : ICacheService

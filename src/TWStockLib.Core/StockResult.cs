@@ -1,6 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 
-namespace TWStockLib.Models;
+namespace TWStockLib;
 
 /// <summary>
 /// 統一的查詢結果包裝（Result Pattern）：以 <see cref="IsSuccess"/> 區分成功/失敗，

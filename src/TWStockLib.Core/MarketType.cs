@@ -1,4 +1,4 @@
-namespace TWStockLib.Models;
+namespace TWStockLib;
 
 /// <summary>台灣股票市場別。</summary>
 public enum MarketType

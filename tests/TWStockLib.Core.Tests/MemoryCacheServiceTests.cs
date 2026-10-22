@@ -1,5 +1,5 @@
 using Microsoft.Extensions.Caching.Memory;
-using TWStockLib.Cache;
+using TWStockLib.Abstractions;
 
 namespace TWStockLib.Core.Tests;
 

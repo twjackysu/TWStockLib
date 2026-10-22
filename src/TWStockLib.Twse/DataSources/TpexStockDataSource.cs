@@ -1,6 +1,5 @@
 using System.Globalization;
-using TWStockLib.Cache;
-using TWStockLib.Models;
+using TWStockLib.Abstractions;
 using TWStockLib.Twse.Http;
 using TWStockLib.Twse.Parsers;
 

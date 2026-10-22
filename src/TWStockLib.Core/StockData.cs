@@ -1,4 +1,4 @@
-namespace TWStockLib.Models;
+namespace TWStockLib;
 
 /// <summary>股票清單中的一檔：代號、名稱與市場別。</summary>
 public sealed record StockData

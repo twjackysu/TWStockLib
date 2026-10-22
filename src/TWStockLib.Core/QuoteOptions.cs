@@ -1,4 +1,4 @@
-namespace TWStockLib.Models;
+namespace TWStockLib;
 
 /// <summary>即時報價的查詢選項。</summary>
 public sealed record QuoteOptions

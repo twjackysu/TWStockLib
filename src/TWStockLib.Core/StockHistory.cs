@@ -1,4 +1,4 @@
-namespace TWStockLib.Models;
+namespace TWStockLib;
 
 /// <summary>單日歷史行情。上市與上櫃的成交量一律為「股」、成交金額一律為「元」。</summary>
 public sealed record StockHistory

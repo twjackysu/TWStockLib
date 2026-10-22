@@ -44,30 +44,19 @@ public interface IStockMarketService
         string symbol, MarketType market, DateOnly from, DateOnly to, CancellationToken ct = default);
 
     /// <summary>
-    /// 取得指定市場的股票清單，從預設的 <see cref="StockListSource.OpenApi"/> 取得。
-    /// 要改用最完整但較慢的 ISIN 頁面時，用 <see cref="StockListOptions"/> 的多載。
-    /// </summary>
-    Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetStockListAsync(
-        MarketType market, bool includeWarrant = false, CancellationToken ct = default);
-
-    /// <summary>
-    /// 以 <paramref name="options"/> 取得指定市場的股票清單，例如改用最完整但較慢的 ISIN 頁面：
+    /// 取得指定市場的股票清單。預設不含權證、從 <see cref="StockListSource.OpenApi"/> 取得；
+    /// 含權證用 <see cref="StockListOptions.WithWarrants"/>，要最完整但較慢的 ISIN 頁面時：
     /// <c>GetStockListAsync(MarketType.TSE, new StockListOptions { Source = StockListSource.Isin })</c>。
+    /// 只想傳 <see cref="CancellationToken"/> 時可用 <see cref="StockMarketServiceExtensions"/> 的多載。
     /// </summary>
-    /// <exception cref="ArgumentNullException"><paramref name="options"/> 為 <c>null</c>。</exception>
     /// <exception cref="ArgumentOutOfRangeException"><see cref="StockListOptions.Source"/> 不是定義的值。</exception>
     Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetStockListAsync(
-        MarketType market, StockListOptions options, CancellationToken ct = default);
+        MarketType market, StockListOptions? options = null, CancellationToken ct = default);
 
-    /// <summary>取得上市 + 上櫃的股票清單，從預設的 <see cref="StockListSource.OpenApi"/> 取得。</summary>
-    Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetAllStockListAsync(
-        bool includeWarrant = false, CancellationToken ct = default);
-
-    /// <summary>以 <paramref name="options"/> 取得上市 + 上櫃的股票清單。</summary>
-    /// <exception cref="ArgumentNullException"><paramref name="options"/> 為 <c>null</c>。</exception>
+    /// <summary>取得上市 + 上櫃的股票清單；<paramref name="options"/> 同 <see cref="GetStockListAsync"/>。</summary>
     /// <exception cref="ArgumentOutOfRangeException"><see cref="StockListOptions.Source"/> 不是定義的值。</exception>
     Task<StockResult<IReadOnlyDictionary<string, StockData>>> GetAllStockListAsync(
-        StockListOptions options, CancellationToken ct = default);
+        StockListOptions? options = null, CancellationToken ct = default);
 
     /// <summary>
     /// 持續追蹤指定股票的成交價：先回傳一次目前的報價，之後每隔 <paramref name="interval"/>

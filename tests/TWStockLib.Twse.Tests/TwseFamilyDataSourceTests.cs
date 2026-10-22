@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using Microsoft.Extensions.Caching.Memory;
 using TWStockLib.Abstractions;
@@ -161,7 +162,7 @@ public class TwseFamilyDataSourceTests
         var fetcher = TseOpenApi();
         var source = new TwseStockDataSource(fetcher, NewCache(), Oct22);
 
-        var list = await source.FetchStockListAsync();
+        var list = await source.FetchStockListAsync(StockListOptions.Default);
 
         Assert.Equal(["0050", "00631L", "01001T", "020000", "1101", "2330", "2887Z1", "910322"], list.Keys.Order());
         Assert.Equal(new StockData { Symbol = "2330", Name = "台積電", Market = MarketType.TSE }, list["2330"]);
@@ -175,7 +176,7 @@ public class TwseFamilyDataSourceTests
         var fetcher = TseOpenApi();
         var source = new TwseStockDataSource(fetcher, NewCache(), Oct22);
 
-        var all = await source.FetchStockListAsync(includeWarrant: true);
+        var all = await source.FetchStockListAsync(StockListOptions.WithWarrants);
 
         Assert.Equal(12, all.Count);
         Assert.All(["030001", "03004T", "03726B", "03080T"], symbol => Assert.Contains(symbol, all.Keys));
@@ -190,9 +191,9 @@ public class TwseFamilyDataSourceTests
         var fetcher = TseOpenApi();
         var source = new TwseStockDataSource(fetcher, NewCache(), Oct22);
 
-        var first = await source.FetchStockListAsync(includeWarrant: true);
-        var withoutWarrants = await source.FetchStockListAsync();
-        var second = await source.FetchStockListAsync(includeWarrant: true);
+        var first = await source.FetchStockListAsync(StockListOptions.WithWarrants);
+        var withoutWarrants = await source.FetchStockListAsync(StockListOptions.Default);
+        var second = await source.FetchStockListAsync(StockListOptions.WithWarrants);
 
         Assert.Same(first, second);
         Assert.Equal(8, withoutWarrants.Count);
@@ -206,7 +207,7 @@ public class TwseFamilyDataSourceTests
         var source = new TwseStockDataSource(TseOpenApi(), NewCache(),
             new FixedTimeProvider(DateTimeOffset.Parse("2026-10-22T16:30:00+00:00", CultureInfo.InvariantCulture)));
 
-        var all = await source.FetchStockListAsync(includeWarrant: true);
+        var all = await source.FetchStockListAsync(StockListOptions.WithWarrants);
 
         Assert.DoesNotContain("03080T", all.Keys);
         Assert.Contains("030001", all.Keys);
@@ -218,9 +219,9 @@ public class TwseFamilyDataSourceTests
         var fetcher = new ListFetcher((TpexQuotesUrl, OpenApiFixtures.TpexQuotes), (TpexWarrantsUrl, OpenApiFixtures.TpexWarrants));
         var source = new TpexStockDataSource(fetcher, NewCache(), Oct22);
 
-        var withoutWarrants = await source.FetchStockListAsync();
+        var withoutWarrants = await source.FetchStockListAsync(StockListOptions.Default);
         Assert.Equal([TpexQuotesUrl], fetcher.Urls);
-        var all = await source.FetchStockListAsync(includeWarrant: true);
+        var all = await source.FetchStockListAsync(StockListOptions.WithWarrants);
 
         Assert.Equal(["00679B", "020001", "6510", "8349A"], withoutWarrants.Keys.Order());
         Assert.Equal(["00679B", "020001", "6510", "700019", "72479U", "8349A"], all.Keys.Order());
@@ -276,7 +277,7 @@ public class TwseFamilyDataSourceTests
         var source = new TwseStockDataSource(fetcher, NewCache(), Oct22);
 
         var fromIsin = await source.FetchStockListAsync(Isin);
-        var fromOpenApi = await source.FetchStockListAsync();
+        var fromOpenApi = await source.FetchStockListAsync(StockListOptions.Default);
 
         Assert.Equal(11, fromIsin.Count);
         Assert.Equal(8, fromOpenApi.Count);
@@ -359,7 +360,7 @@ public class TwseFamilyDataSourceTests
         var source = new TpexStockDataSource(fetcher, NewCache(), TimeProvider.System);
 
         var callers = Enumerable.Range(0, 10)
-            .Select(_ => Task.Run(() => source.FetchStockListAsync()))
+            .Select(_ => Task.Run(() => source.FetchStockListAsync(StockListOptions.Default)))
             .ToArray();
         while (fetcher.Requests == 0)
             await Task.Delay(10);
@@ -535,14 +536,22 @@ public class TwseFamilyDataSourceTests
     {
         public Dictionary<string, TimeSpan> Expiries { get; } = [];
 
-        public Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry)
+        public Task<T> GetOrSetAsync<T>(
+            string key, Func<CancellationToken, Task<T>> factory, TimeSpan expiry, CancellationToken ct = default)
         {
             Expiries[key] = expiry;
-            return factory();
+            return factory(ct);
         }
 
-        public Task<T> RefreshAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry)
-            => GetOrSetAsync(key, factory, expiry);
+        public Task<T> RefreshAsync<T>(
+            string key, Func<CancellationToken, Task<T>> factory, TimeSpan expiry, CancellationToken ct = default)
+            => GetOrSetAsync(key, factory, expiry, ct);
+
+        public bool TryGetValue<T>(string key, [MaybeNullWhen(false)] out T value)
+        {
+            value = default;
+            return false;
+        }
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider

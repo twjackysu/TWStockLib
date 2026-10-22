@@ -155,7 +155,7 @@ public class GetRealtimeQuotesTests
 
     // ── IStockDataSource 的預設實作 ──────────────────────────────────────────
 
-    /// <summary>只實作 3.0 既有成員的第三方來源：批次查詢走介面的預設實作。</summary>
+    /// <summary>沒有覆寫批次查詢的自訂來源：批次查詢走介面的預設實作。</summary>
     private sealed class SingleQuoteOnlySource : IStockDataSource
     {
         public List<(string Symbol, QuoteOptions Options)> Calls { get; } = [];
@@ -172,7 +172,7 @@ public class GetRealtimeQuotesTests
             string symbol, DateOnly from, DateOnly to, CancellationToken ct = default) => throw new NotSupportedException();
 
         public Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(
-            bool includeWarrant = false, CancellationToken ct = default) => throw new NotSupportedException();
+            StockListOptions options, CancellationToken ct = default) => throw new NotSupportedException();
     }
 
     [Fact]

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
 using TWStockLib.Abstractions;
 
@@ -41,8 +42,17 @@ public class TwStockServiceCollectionExtensionsTests
 
     private sealed class CustomCache : ICacheService
     {
-        public Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry) => factory();
-        public Task<T> RefreshAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry) => factory();
+        public Task<T> GetOrSetAsync<T>(
+            string key, Func<CancellationToken, Task<T>> factory, TimeSpan expiry, CancellationToken ct = default) => factory(ct);
+
+        public Task<T> RefreshAsync<T>(
+            string key, Func<CancellationToken, Task<T>> factory, TimeSpan expiry, CancellationToken ct = default) => factory(ct);
+
+        public bool TryGetValue<T>(string key, [MaybeNullWhen(false)] out T value)
+        {
+            value = default;
+            return false;
+        }
     }
 
     [Fact]

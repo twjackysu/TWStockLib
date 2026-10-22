@@ -27,7 +27,7 @@ internal sealed class TwseHttpFetcher : IStockHttpFetcher
     public async Task<string> GetBig5StringAsync(string url, CancellationToken ct = default)
     {
         var client = _httpClientFactory.CreateClient(TwStockOptions.HttpClientName);
-        var response = await client.GetAsync(url, ct);
+        using var response = await client.GetAsync(url, ct);
         response.EnsureSuccessStatusCode();
 
         var raw = await response.Content.ReadAsByteArrayAsync(ct);

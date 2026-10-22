@@ -1,28 +1,23 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Caching.Memory;
 
 namespace TWStockLib.Abstractions;
 
 /// <summary>
-/// 以 <see cref="IMemoryCache"/> 實作的 <see cref="ICacheService"/>。帶 <see cref="CancellationToken"/> 的
-/// <c>GetOrSetAsync</c> 會合併同一個 key 同時發生的未命中（single-flight）：例如十個呼叫同時查詢尚未快取的股票清單，
-/// 只會下載一次。
+/// 以 <see cref="IMemoryCache"/> 實作的 <see cref="ICacheService"/>。<c>GetOrSetAsync</c> 會合併同一個 key
+/// 同時發生的未命中（single-flight）：例如十個呼叫同時查詢尚未快取的股票清單，只會下載一次。
 /// </summary>
 public sealed class MemoryCacheService(IMemoryCache memoryCache) : ICacheService
 {
     /// <summary>進行中的載入，值為 <see cref="Flight{T}"/>。載入結果寫入快取後才移除，之後的呼叫一定命中快取或開始新的載入。</summary>
     private readonly ConcurrentDictionary<string, object> _flights = new();
 
-    public async Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry)
-    {
-        if (memoryCache.TryGetValue(key, out T? cachedValue) && cachedValue is not null)
-            return cachedValue;
-
-        return await RefreshAsync(key, factory, expiry);
-    }
+    public bool TryGetValue<T>(string key, [MaybeNullWhen(false)] out T value)
+        => memoryCache.TryGetValue(key, out value) && value is not null;
 
     public async Task<T> GetOrSetAsync<T>(
-        string key, Func<CancellationToken, Task<T>> factory, TimeSpan expiry, CancellationToken ct)
+        string key, Func<CancellationToken, Task<T>> factory, TimeSpan expiry, CancellationToken ct = default)
     {
         while (true)
         {
@@ -40,7 +35,7 @@ public sealed class MemoryCacheService(IMemoryCache memoryCache) : ICacheService
 
             // 同一個 key 被當成不同型別使用，無法共用結果，照一般的未命中處理
             if (existing is not Flight<T> running)
-                return await RefreshAsync(key, () => factory(ct), expiry);
+                return await RefreshAsync(key, factory, expiry, ct);
 
             if (running.TryJoin())
                 return await running.WaitAsync(ct);
@@ -50,9 +45,10 @@ public sealed class MemoryCacheService(IMemoryCache memoryCache) : ICacheService
         }
     }
 
-    public async Task<T> RefreshAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry)
+    public async Task<T> RefreshAsync<T>(
+        string key, Func<CancellationToken, Task<T>> factory, TimeSpan expiry, CancellationToken ct = default)
     {
-        var value = await factory();
+        var value = await factory(ct);
         if (value is not null)
             memoryCache.Set(key, value, expiry);
 

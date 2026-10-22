@@ -80,7 +80,7 @@ public class TwStockOptionsTests
         Assert.Equal(TimeSpan.FromSeconds(30), expiries["realtime_quote_TSE_2330"]);
         Assert.Equal(TimeSpan.FromDays(1), expiries["history_TSE_2330_202508"]);
         Assert.Equal(TimeSpan.FromMinutes(30), expiries["history_TSE_2330_202509"]);
-        Assert.Equal(TimeSpan.FromDays(1), expiries["stock_list_TSE_False"]);
+        Assert.Equal(TimeSpan.FromDays(1), expiries["stock_list_TSE"]);
     }
 
     [Fact]
@@ -97,7 +97,7 @@ public class TwStockOptionsTests
         Assert.Equal(TimeSpan.FromSeconds(10), expiries["realtime_quote_TSE_2330"]);
         Assert.Equal(TimeSpan.FromDays(7), expiries["history_TSE_2330_202508"]);
         Assert.Equal(TimeSpan.FromMinutes(5), expiries["history_TSE_2330_202509"]);
-        Assert.Equal(TimeSpan.FromHours(6), expiries["stock_list_TSE_False"]);
+        Assert.Equal(TimeSpan.FromHours(6), expiries["stock_list_TSE"]);
     }
 
     [Fact]
@@ -111,7 +111,7 @@ public class TwStockOptionsTests
         });
 
         Assert.Equal(TimeSpan.FromSeconds(20), expiries["realtime_quote_TSE_2330"]);
-        Assert.Equal(TimeSpan.FromHours(6), expiries["stock_list_TSE_False"]);
+        Assert.Equal(TimeSpan.FromHours(6), expiries["stock_list_TSE"]);
     }
 
     [Fact]

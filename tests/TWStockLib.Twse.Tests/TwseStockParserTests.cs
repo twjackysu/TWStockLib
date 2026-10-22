@@ -199,7 +199,7 @@ public class TwseStockParserTests
         """;
         var quote = TwseStockParser.ParseRealtimeQuote(QuoteJson, MarketType.TSE)!;
         var history = TwseStockParser.ParseTwseHistory(json);
-        var list = TwseStockParser.ParseStockList(IsinFixtures.Tse, MarketType.TSE, includeWarrant: true);
+        var list = TwseStockParser.ParseStockList(IsinFixtures.Tse, MarketType.TSE);
 
         Assert.True(((ICollection<PriceLevel>)quote.Asks).IsReadOnly);
         Assert.True(((ICollection<StockHistory>)history).IsReadOnly);
@@ -238,20 +238,10 @@ public class TwseStockParserTests
     // ── 股票清單（ISIN HTML）──────────────────────────────────────────────────
 
     [Fact]
-    public void ParseStockList_ExcludesWarrants_IncludingBullBearCertificates_ByDefault()
+    public void ParseStockList_ReturnsTheFullList_IncludingWarrantsAndBullBearCertificates()
     {
-        var list = TwseStockParser.ParseStockList(IsinFixtures.Tse, MarketType.TSE, includeWarrant: false);
-
-        Assert.Equal(11, list.Count);
-        Assert.DoesNotContain(list.Values, s => s.SecurityType == SecurityType.Warrant);
-        Assert.DoesNotContain("03989C", list.Keys); // 牛證
-        Assert.DoesNotContain("03726B", list.Keys); // 熊證
-    }
-
-    [Fact]
-    public void ParseStockList_IncludesWarrants_WhenRequested()
-    {
-        var list = TwseStockParser.ParseStockList(IsinFixtures.Tse, MarketType.TSE, includeWarrant: true);
+        // 是否排除權證改由資料來源在讀取時過濾，parser 一律回傳完整清單
+        var list = TwseStockParser.ParseStockList(IsinFixtures.Tse, MarketType.TSE);
 
         Assert.Equal(15, list.Count);
         Assert.All(["030001", "03004T", "03726B", "03989C"],
@@ -261,7 +251,7 @@ public class TwseStockParserTests
     [Fact]
     public void ParseStockList_MapsEveryIsinColumn()
     {
-        var list = TwseStockParser.ParseStockList(IsinFixtures.Tse, MarketType.TSE, includeWarrant: true);
+        var list = TwseStockParser.ParseStockList(IsinFixtures.Tse, MarketType.TSE);
 
         Assert.Equal(new StockData
         {
@@ -279,7 +269,7 @@ public class TwseStockParserTests
     [Fact]
     public void ParseStockList_SecuritiesWithoutAnIndustry_HaveNullIndustry()
     {
-        var list = TwseStockParser.ParseStockList(IsinFixtures.Tse, MarketType.TSE, includeWarrant: true);
+        var list = TwseStockParser.ParseStockList(IsinFixtures.Tse, MarketType.TSE);
 
         Assert.Null(list["0050"].Industry);
         Assert.Null(list["030001"].Industry);
@@ -303,7 +293,7 @@ public class TwseStockParserTests
     [InlineData("01001T", SecurityType.BeneficiarySecurity)] // REIT：CBCIXU
     public void ParseStockList_Tse_DerivesTheSecurityTypeFromTheCfiCode(string symbol, SecurityType expected)
     {
-        var list = TwseStockParser.ParseStockList(IsinFixtures.Tse, MarketType.TSE, includeWarrant: true);
+        var list = TwseStockParser.ParseStockList(IsinFixtures.Tse, MarketType.TSE);
 
         Assert.Equal(expected, list[symbol].SecurityType);
     }
@@ -318,7 +308,7 @@ public class TwseStockParserTests
     [InlineData("01111S", SecurityType.BeneficiarySecurity)] // 資產基礎證券：DAFUFR
     public void ParseStockList_Otc_DerivesTheSecurityTypeFromTheCfiCode(string symbol, SecurityType expected)
     {
-        var list = TwseStockParser.ParseStockList(IsinFixtures.Otc, MarketType.OTC, includeWarrant: true);
+        var list = TwseStockParser.ParseStockList(IsinFixtures.Otc, MarketType.OTC);
 
         Assert.Equal(7, list.Count);
         Assert.Equal(expected, list[symbol].SecurityType);
@@ -338,13 +328,13 @@ public class TwseStockParserTests
     }
 
     [Fact]
-    public void ParseStockList_ABlankCfiCode_IsUnknown_AndNotTreatedAsAWarrant()
+    public void ParseStockList_ABlankCfiCode_IsUnknown()
     {
         var html = IsinFixtures.Tse.Replace(
             "水泥工業</td><td bgcolor=#FAFAD2>ESVUFR</td>", "水泥工業</td><td bgcolor=#FAFAD2></td>");
         Assert.NotEqual(IsinFixtures.Tse, html);
 
-        var list = TwseStockParser.ParseStockList(html, MarketType.TSE, includeWarrant: false);
+        var list = TwseStockParser.ParseStockList(html, MarketType.TSE);
 
         Assert.Equal(SecurityType.Unknown, list["1101"].SecurityType);
         Assert.Null(list["1101"].CfiCode);

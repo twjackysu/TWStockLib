@@ -91,7 +91,8 @@ internal static class TwseStockParser
         return MapRows(data, TpexUnitScale);
     }
 
-    public static IReadOnlyDictionary<string, StockData> ParseStockList(string html, MarketType market, bool includeWarrant)
+    /// <summary>解析完整清單（含權證），是否排除權證由呼叫端依 <see cref="StockData.SecurityType"/> 過濾。</summary>
+    public static IReadOnlyDictionary<string, StockData> ParseStockList(string html, MarketType market)
     {
         var parser = new HtmlParser();
         var doc = parser.ParseDocument(html);
@@ -103,11 +104,8 @@ internal static class TwseStockParser
         var result = new Dictionary<string, StockData>();
         foreach (var el in elements)
         {
-            if (TryMapIsinRow(el, market, out var stock)
-                && (includeWarrant || stock.SecurityType != SecurityType.Warrant))
-            {
+            if (TryMapIsinRow(el, market, out var stock))
                 result[stock.Symbol] = stock;
-            }
         }
 
         return result.ToFrozenDictionary();

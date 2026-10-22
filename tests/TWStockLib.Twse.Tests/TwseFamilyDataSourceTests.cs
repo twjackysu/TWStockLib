@@ -112,6 +112,78 @@ public class TwseFamilyDataSourceTests
         Assert.Equal(22950.00m, quote.YesterdayClosingPrice);
     }
 
+    // ── 股票清單 ──────────────────────────────────────────────────────────────
+
+    private sealed class IsinFetcher(string html) : IStockHttpFetcher
+    {
+        public List<string> Urls { get; } = [];
+
+        public Task<string> GetStringAsync(string url, CancellationToken ct = default) => throw new NotSupportedException();
+
+        public Task<string> GetBig5StringAsync(string url, CancellationToken ct = default)
+        {
+            lock (Urls)
+                Urls.Add(url);
+            return Task.FromResult(html);
+        }
+    }
+
+    private static ICacheService NewCache() => new MemoryCacheService(new MemoryCache(new MemoryCacheOptions()));
+
+    [Fact]
+    public async Task FetchStockListAsync_WithAndWithoutWarrants_ShareOneDownload()
+    {
+        var fetcher = new IsinFetcher(IsinFixtures.Tse);
+        var source = new TwseStockDataSource(fetcher, NewCache(), TimeProvider.System);
+
+        var withoutWarrants = await source.FetchStockListAsync(includeWarrant: false);
+        var all = await source.FetchStockListAsync(includeWarrant: true);
+
+        Assert.Equal(11, withoutWarrants.Count);
+        Assert.Equal(15, all.Count);
+        Assert.Equal(["https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"], fetcher.Urls);
+    }
+
+    [Fact]
+    public async Task FetchStockListAsync_ByDefault_ExcludesWarrants_IncludingBullBearCertificates()
+    {
+        var source = new TwseStockDataSource(new IsinFetcher(IsinFixtures.Tse), NewCache(), TimeProvider.System);
+
+        var list = await source.FetchStockListAsync();
+
+        Assert.DoesNotContain(list.Values, s => s.SecurityType == SecurityType.Warrant);
+        Assert.DoesNotContain("03989C", list.Keys); // 牛證
+        Assert.DoesNotContain("03726B", list.Keys); // 熊證
+        Assert.Contains("0050", list.Keys);
+        Assert.True(((ICollection<KeyValuePair<string, StockData>>)list).IsReadOnly);
+    }
+
+    [Fact]
+    public async Task FetchStockListAsync_WithoutWarrants_IsFilteredOncePerDownload()
+    {
+        var source = new TwseStockDataSource(new IsinFetcher(IsinFixtures.Tse), NewCache(), TimeProvider.System);
+
+        var first = await source.FetchStockListAsync();
+        var second = await source.FetchStockListAsync();
+
+        Assert.Same(first, second);
+    }
+
+    [Fact]
+    public async Task FetchStockListAsync_Otc_UsesItsOwnPageAndCacheEntry()
+    {
+        var cache = NewCache();
+        var tseFetcher = new IsinFetcher(IsinFixtures.Tse);
+        var otcFetcher = new IsinFetcher(IsinFixtures.Otc);
+        await new TwseStockDataSource(tseFetcher, cache, TimeProvider.System).FetchStockListAsync();
+
+        var otc = await new TpexStockDataSource(otcFetcher, cache, TimeProvider.System).FetchStockListAsync(includeWarrant: true);
+
+        Assert.Equal(["https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"], otcFetcher.Urls);
+        Assert.Equal(7, otc.Count);
+        Assert.All(otc.Values, s => Assert.Equal(MarketType.OTC, s.Market));
+    }
+
     // ── 歷史資料的快取時間 ────────────────────────────────────────────────────
 
     private sealed class RecordingCache : ICacheService

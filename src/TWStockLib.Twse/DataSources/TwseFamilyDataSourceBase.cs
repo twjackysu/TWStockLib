@@ -1,4 +1,6 @@
+using System.Collections.Frozen;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Options;
 using TWStockLib.Abstractions;
 using TWStockLib.Twse.Http;
@@ -18,6 +20,10 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
     protected readonly ICacheService Cache;
     private readonly TimeProvider _timeProvider;
     private readonly TwStockOptions _options;
+
+    // 「不含權證」的檢視依完整清單的實例記住：同一份快取只過濾一次，快取換新後舊檢視跟著被回收
+    private readonly ConditionalWeakTable<IReadOnlyDictionary<string, StockData>, IReadOnlyDictionary<string, StockData>>
+        _withoutWarrants = new();
 
     // options 未指定（直接 new 的測試）時使用 TwStockOptions 的預設快取時間
     protected TwseFamilyDataSourceBase(
@@ -71,16 +77,26 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
         return result.AsReadOnly();
     }
 
-    public Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(
+    /// <summary>
+    /// ISIN 頁面有數 MB，每個市場只下載、解析一次並快取完整清單（含權證）；
+    /// 是否排除權證在讀取時從同一份清單過濾，兩種查詢共用一次下載。
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, StockData>> FetchStockListAsync(
         bool includeWarrant = false, CancellationToken ct = default)
     {
-        var cacheKey = $"stock_list_{Market}_{includeWarrant}";
-        return Cache.GetOrSetAsync(cacheKey, async () =>
+        var cacheKey = $"stock_list_{Market}";
+        var all = await Cache.GetOrSetAsync(cacheKey, async () =>
         {
             var url = $"https://isin.twse.com.tw/isin/C_public.jsp?strMode={IsinStrMode}";
             var html = await Fetcher.GetBig5StringAsync(url, ct);
-            return TwseStockParser.ParseStockList(html, Market, includeWarrant);
+            return TwseStockParser.ParseStockList(html, Market);
         }, _options.StockListCacheDuration);
+
+        return includeWarrant
+            ? all
+            : _withoutWarrants.GetValue(all, static list => list
+                .Where(p => p.Value.SecurityType != SecurityType.Warrant)
+                .ToFrozenDictionary());
     }
 
     /// <summary>取得單一月份的歷史資料（含快取），由子類別決定端點與解析方式。</summary>

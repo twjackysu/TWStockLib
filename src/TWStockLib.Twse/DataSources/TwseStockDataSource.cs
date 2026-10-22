@@ -17,11 +17,11 @@ internal sealed class TwseStockDataSource(
 
     protected override Task<IReadOnlyList<StockHistory>> FetchMonthAsync(
         string symbol, DateOnly month, CancellationToken ct)
-        => CachedMonth(symbol, month, async () =>
+        => CachedMonth(symbol, month, async token =>
         {
             var url = string.Create(CultureInfo.InvariantCulture,
                 $"https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date={month:yyyyMMdd}&stockNo={symbol}");
-            var json = await Fetcher.GetStringAsync(url, ct);
+            var json = await Fetcher.GetStringAsync(url, token);
             return TwseStockParser.ParseTwseHistory(json);
-        });
+        }, ct);
 }

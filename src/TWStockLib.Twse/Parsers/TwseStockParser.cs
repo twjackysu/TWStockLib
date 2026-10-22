@@ -16,7 +16,10 @@ internal static class TwseStockParser
     /// <summary>櫃買 st43 的成交量單位是「仟股」、成交金額是「仟元」；證交所 STOCK_DAY 是「股」、「元」。</summary>
     private const int TpexUnitScale = 1000;
 
-    /// <summary>ISIN 表格欄位依序為：代號及名稱、ISIN、上市日、市場別、產業別、CFICode、備註。</summary>
+    // ISIN 表格欄位依序為：代號及名稱、ISIN、上市日、市場別、產業別、CFICode、備註
+    private const int IsinCodeColumn = 1;
+    private const int IsinListedDateColumn = 2;
+    private const int IsinIndustryColumn = 4;
     private const int IsinCfiCodeColumn = 5;
 
     private static readonly TimeSpan TaiwanUtcOffset = TimeSpan.FromHours(8);
@@ -88,42 +91,79 @@ internal static class TwseStockParser
         return MapRows(data, TpexUnitScale);
     }
 
-    public static IReadOnlyDictionary<string, StockData> ParseStockList(string html, MarketType market, bool includeWarrant)
+    /// <summary>解析完整清單（含權證），是否排除權證由呼叫端依 <see cref="StockData.SecurityType"/> 過濾。</summary>
+    public static IReadOnlyDictionary<string, StockData> ParseStockList(string html, MarketType market)
     {
         var parser = new HtmlParser();
         var doc = parser.ParseDocument(html);
 
+        // 每列第一格是「代號　名稱」；跨 7 欄的是「股票」、「ETF」這類分段標題
         var elements = doc.QuerySelectorAll(
             "body > table.h4 > tbody > tr > td:nth-child(1)[bgcolor='#FAFAD2']:not([colspan='7'])");
 
         var result = new Dictionary<string, StockData>();
         foreach (var el in elements)
         {
-            if (!includeWarrant && IsWarrant(el))
-                continue;
-
-            var parts = el.TextContent.Split('　'); // 全形空白
-            if (parts.Length < 2)
-                continue;
-
-            var symbol = parts[0];
-            result[symbol] = new StockData { Symbol = symbol, Name = parts[1], Market = market };
+            if (TryMapIsinRow(el, market, out var stock))
+                result[stock.Symbol] = stock;
         }
 
         return result.ToFrozenDictionary();
     }
 
-    /// <summary>
-    /// 以該列的 CFICode 判斷是否為權證：ISO 10962 的「RW」開頭即權證，認購、認售與牛熊證都在內。
-    /// 名稱字尾（購 / 售）無法涵蓋牛熊證（如「臺股指凱基5A牛04」）。
-    /// </summary>
-    private static bool IsWarrant(IElement firstCell)
+    private static bool TryMapIsinRow(IElement firstCell, MarketType market, [NotNullWhen(true)] out StockData? stock)
     {
+        stock = null;
+        var parts = firstCell.TextContent.Split('　', 2); // 全形空白
+        if (parts.Length < 2)
+            return false;
+
         var cells = firstCell.ParentElement?.Children;
-        return cells is not null
-            && cells.Length > IsinCfiCodeColumn
-            && cells[IsinCfiCodeColumn].TextContent.Trim().StartsWith("RW", StringComparison.Ordinal);
+        string Cell(int column) => cells is not null && cells.Length > column ? cells[column].TextContent.Trim() : "";
+        var cfiCode = Cell(IsinCfiCodeColumn);
+
+        stock = new StockData
+        {
+            Symbol = parts[0].Trim(),
+            Name = parts[1].Trim(),
+            Market = market,
+            SecurityType = ToSecurityType(cfiCode),
+            Industry = NullIfEmpty(Cell(IsinIndustryColumn)),
+            Isin = NullIfEmpty(Cell(IsinCodeColumn)),
+            ListedDate = DateOnly.TryParseExact(
+                Cell(IsinListedDateColumn), "yyyy/MM/dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var listed)
+                ? listed
+                : null,
+            CfiCode = NullIfEmpty(cfiCode),
+        };
+        return true;
     }
+
+    /// <summary>
+    /// 依 CFICode（ISO 10962）的前兩碼判斷證券類型。對照取自證交所與櫃買 ISIN 頁面實際使用的代碼：
+    /// 「RW」開頭即權證，認購、認售與牛熊證都在內——名稱字尾（購 / 售）無法涵蓋牛熊證（如「臺股指凱基5A牛04」）；
+    /// 「CM」在標準中是「其他集合投資工具」，兩個市場目前只有 ETN 使用（<c>CMXXXU</c>）。
+    /// </summary>
+    internal static SecurityType ToSecurityType(string cfiCode)
+    {
+        if (cfiCode.Length < 2)
+            return SecurityType.Unknown;
+
+        return cfiCode[..2] switch
+        {
+            "ES" => SecurityType.CommonStock,
+            "EP" or "EF" => SecurityType.PreferredStock,
+            "ED" => SecurityType.DepositaryReceipt,
+            "CE" => SecurityType.Etf,
+            "CM" => SecurityType.Etn,
+            "CB" or "DA" => SecurityType.BeneficiarySecurity,
+            "RW" => SecurityType.Warrant,
+            _ when cfiCode[0] == 'D' => SecurityType.Bond,
+            _ => SecurityType.Other,
+        };
+    }
+
+    private static string? NullIfEmpty(string text) => text.Length == 0 ? null : text;
 
     #region History Rows
 

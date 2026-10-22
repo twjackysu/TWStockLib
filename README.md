@@ -30,11 +30,11 @@ dotnet add package TWStockLib.Core
 
 ## 功能特點
 
-- 獲取上市（TSE）與上櫃（OTC）股票清單，預設排除權證與牛熊證
+- 獲取上市（TSE）與上櫃（OTC）股票清單，含證券類型、產業別、ISIN 與上市日；可依證券類型過濾，預設排除權證與牛熊證
 - 獲取股票歷史日成交資料（跨月自動合併，上市與上櫃單位一致）
 - 獲取股票即時報價（含最佳五檔）
 - 以 `await foreach` 追蹤成交價變動
-- 內建快取，減少對上游的請求
+- 內建快取，減少對上游的請求；同時發生的相同查詢只向上游要一次
 - 內建每主機限流，長區間歷史查詢與多檔追蹤不會讓證交所封鎖你的 IP
 - 快取時間、限流可設定；可在 HttpClient 上自行加上重試（不強迫相依 Polly）
 - 完整的錯誤處理與日誌記錄
@@ -98,9 +98,46 @@ if (all.IsSuccess)
 
 var tse = await stock.GetStockListAsync(MarketType.TSE);
 var otcWithWarrants = await stock.GetStockListAsync(MarketType.OTC, includeWarrant: true);
+
+// 依證券類型過濾：上市的普通股與 ETF、全市場的 ETF
+var stocksAndEtfs = await stock.GetStockListAsync(MarketType.TSE, [SecurityType.CommonStock, SecurityType.Etf]);
+var etfs = await stock.GetAllStockListAsync([SecurityType.Etf]);
+
+if (tse.IsSuccess)
+{
+    var tsmc = tse.Value["2330"];
+    Console.WriteLine($"{tsmc.Name} {tsmc.SecurityType} {tsmc.Industry} {tsmc.Isin} {tsmc.ListedDate}");
+    // 台積電 CommonStock 半導體業 TW0002330008 1994/9/5
+}
 ```
 
 預設排除權證；是否為權證依 ISIN 的 CFICode 判斷，認購、認售與牛熊證都算在內。
+上市清單約 4 萬筆，其中九成以上是權證（2026/10/22：40,476 筆中 39,088 筆）。
+
+每一檔除了 `Symbol`、`Name`、`Market`，還有 ISIN 頁面上的資料：
+
+| 屬性 | 說明 |
+|------|------|
+| `SecurityType` | 證券類型，依 CFICode 判斷（見下表）；自訂資料來源沒有提供時為 `Unknown` |
+| `Industry` | 產業別，例如「半導體業」；ETF、權證等沒有產業別的證券為 `null` |
+| `Isin` | 國際證券辨識號碼，例如 `TW0002330008`；KY 股為發行地的 ISIN |
+| `ListedDate` | 上市（櫃）日，`DateOnly?` |
+| `CfiCode` | 原始的 CFI 代碼（ISO 10962），需要更細的分類（例如認購 / 認售權證）時使用 |
+
+| `SecurityType` | CFICode | 例子 |
+|----------------|---------|------|
+| `CommonStock` | `ES…` | 2330 台積電、3673 TPK-KY、創新板的 2237 華德動能-創 |
+| `PreferredStock` | `EP…`、`EF…` | 2887Z1 台新新光己特、2897B 王道銀乙特 |
+| `DepositaryReceipt` | `ED…` | 910322 康師傅-DR（臺灣存託憑證） |
+| `Etf` | `CE…` | 0050 元大台灣50、00679B 元大美債20年 |
+| `Etn` | `CM…` | 020000 富邦特選蘋果N |
+| `BeneficiarySecurity` | `CB…`、`DA…` | 01001T 土銀富邦R1（REIT）、01111S 081中租賃A（資產基礎證券） |
+| `Warrant` | `RW…` | 認購、認售與牛熊證 |
+| `Bond` | 其他 `D…` | 目前兩個清單頁都沒有 |
+| `Other` | 其他代碼 | 目前兩個清單頁都沒有 |
+
+清單頁有數 MB（上市約 9.6 MB），每個市場只下載、解析一次並快取（預設 1 天）；
+含不含權證、依類型過濾都從同一份清單取得，同時發生的多個查詢也只下載一次。
 
 #### 歷史資料
 
@@ -230,6 +267,8 @@ services.AddHttpClient(TwStockOptions.HttpClientName)
   ```
 
 - **替換快取**：在 `AddTwStock()` 之前註冊自己的 `ICacheService`，會保留你的實作。
+  帶 `CancellationToken` 的 `GetOrSetAsync` 多載有預設實作，可以不實作；內建的 `MemoryCacheService` 用它把
+  同一個 key 同時發生的未命中合併成一次上游請求，自訂快取若要同樣的效果再自行實作。
 
 ## 錯誤碼
 

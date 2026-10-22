@@ -97,4 +97,207 @@ public class MemoryCacheServiceTests
         Assert.Equal("a", second);
         Assert.Equal(1, counter.Calls);
     }
+
+    // ── 合併同時發生的未命中（single-flight）──────────────────────────────────
+
+    /// <summary>被呼叫後停在 <see cref="Release"/> 之前的 factory，記錄呼叫次數與收到的 token。</summary>
+    private sealed class GatedFactory
+    {
+        private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _calls;
+
+        public int Calls => Volatile.Read(ref _calls);
+        public CancellationToken Token { get; private set; }
+        public Task Started => _started.Task;
+
+        public async Task<string?> Run(CancellationToken token, string? value = "v")
+        {
+            Interlocked.Increment(ref _calls);
+            Token = token;
+            _started.TrySetResult();
+            await _release.Task.WaitAsync(token);
+            return value;
+        }
+
+        public void Release() => _release.TrySetResult();
+    }
+
+    [Fact]
+    public async Task GetOrSetAsync_ConcurrentMisses_RunTheFactoryOnce()
+    {
+        var cache = Build();
+        var factory = new GatedFactory();
+
+        var callers = Enumerable.Range(0, 10)
+            .Select(_ => cache.GetOrSetAsync("k", t => factory.Run(t), Expiry, CancellationToken.None))
+            .ToArray();
+        await factory.Started;
+        factory.Release();
+        var results = await Task.WhenAll(callers);
+
+        Assert.All(results, r => Assert.Equal("v", r));
+        Assert.Equal(1, factory.Calls);
+        Assert.Equal("v", await cache.GetOrSetAsync("k", t => factory.Run(t, "other"), Expiry, CancellationToken.None));
+        Assert.Equal(1, factory.Calls);
+    }
+
+    [Fact]
+    public async Task GetOrSetAsync_OneCallerCancelling_LeavesTheSharedLoadRunningForTheOthers()
+    {
+        var cache = Build();
+        var factory = new GatedFactory();
+        using var leaving = new CancellationTokenSource();
+
+        var first = cache.GetOrSetAsync("k", t => factory.Run(t), Expiry, leaving.Token);
+        await factory.Started;
+        var second = cache.GetOrSetAsync("k", t => factory.Run(t), Expiry, CancellationToken.None);
+        leaving.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+        Assert.False(factory.Token.IsCancellationRequested);
+        factory.Release();
+        Assert.Equal("v", await second);
+        Assert.Equal(1, factory.Calls);
+    }
+
+    [Fact]
+    public async Task GetOrSetAsync_EveryCallerCancelling_CancelsTheFactory_AndTheNextCallStartsOver()
+    {
+        var cache = Build();
+        var factory = new GatedFactory();
+        using var a = new CancellationTokenSource();
+        using var b = new CancellationTokenSource();
+
+        var first = cache.GetOrSetAsync("k", t => factory.Run(t), Expiry, a.Token);
+        await factory.Started;
+        var second = cache.GetOrSetAsync("k", t => factory.Run(t), Expiry, b.Token);
+        a.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+        Assert.False(factory.Token.IsCancellationRequested);
+        b.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => second);
+
+        Assert.True(factory.Token.IsCancellationRequested);
+
+        var counter = new Counter();
+        Assert.Equal("fresh", await cache.GetOrSetAsync("k", _ => counter.Next("fresh"), Expiry, CancellationToken.None));
+        Assert.Equal(1, counter.Calls);
+    }
+
+    [Fact]
+    public async Task GetOrSetAsync_AnAlreadyCancelledCaller_DoesNotStartALoad()
+    {
+        var cache = Build();
+        var counter = new Counter();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => cache.GetOrSetAsync("k", _ => counter.Next("a"), Expiry, new CancellationToken(canceled: true)));
+
+        Assert.Equal(0, counter.Calls);
+    }
+
+    [Fact]
+    public async Task GetOrSetAsync_AFailedSharedLoad_FailsEveryWaiter_AndIsNotCached()
+    {
+        var cache = Build();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        async Task<string?> Failing(CancellationToken t)
+        {
+            Interlocked.Increment(ref calls);
+            await release.Task;
+            throw new HttpRequestException("upstream down");
+        }
+
+        var callers = Enumerable.Range(0, 3)
+            .Select(_ => cache.GetOrSetAsync("k", Failing, Expiry, CancellationToken.None))
+            .ToArray();
+        release.SetResult();
+
+        foreach (var caller in callers)
+            await Assert.ThrowsAsync<HttpRequestException>(() => caller);
+        Assert.Equal(1, calls);
+
+        var counter = new Counter();
+        Assert.Equal("a", await cache.GetOrSetAsync("k", _ => counter.Next("a"), Expiry, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task GetOrSetAsync_ASharedNullResult_IsNotCached()
+    {
+        var cache = Build();
+        var factory = new GatedFactory();
+
+        var callers = Enumerable.Range(0, 3)
+            .Select(_ => cache.GetOrSetAsync("k", t => factory.Run(t, value: null), Expiry, CancellationToken.None))
+            .ToArray();
+        await factory.Started;
+        factory.Release();
+
+        Assert.All(await Task.WhenAll(callers), Assert.Null);
+        Assert.Equal(1, factory.Calls);
+        var counter = new Counter();
+        Assert.Equal("a", await cache.GetOrSetAsync("k", _ => counter.Next("a"), Expiry, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task GetOrSetAsync_DifferentKeys_AreNotMerged()
+    {
+        var cache = Build();
+        var counter = new Counter();
+
+        await Task.WhenAll(
+            cache.GetOrSetAsync("a", _ => counter.Next("a"), Expiry, CancellationToken.None),
+            cache.GetOrSetAsync("b", _ => counter.Next("b"), Expiry, CancellationToken.None));
+
+        Assert.Equal(2, counter.Calls);
+    }
+
+    [Fact]
+    public async Task RefreshAsync_DuringASharedLoad_RunsItsOwnFactory_AndNullStillDoesNotOverwrite()
+    {
+        var cache = Build();
+        var factory = new GatedFactory();
+        var counter = new Counter();
+
+        var shared = cache.GetOrSetAsync("k", t => factory.Run(t), Expiry, CancellationToken.None);
+        await factory.Started;
+        var refreshed = await cache.RefreshAsync("k", () => counter.Next(null), Expiry);
+        factory.Release();
+
+        Assert.Null(refreshed);
+        Assert.Equal(1, counter.Calls);
+        Assert.Equal("v", await shared);
+        Assert.Equal("v", await cache.GetOrSetAsync("k", () => counter.Next("x"), Expiry));
+    }
+
+    // ── 預設介面實作：自訂快取不必實作帶 token 的多載 ─────────────────────────
+
+    private sealed class LegacyCache : ICacheService
+    {
+        public List<string> Keys { get; } = [];
+
+        public Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry)
+        {
+            Keys.Add(key);
+            return factory();
+        }
+
+        public Task<T> RefreshAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry) => factory();
+    }
+
+    [Fact]
+    public async Task TokenOverload_DefaultImplementation_CallsTheOriginalOverloadWithTheCallersToken()
+    {
+        ICacheService legacy = new LegacyCache();
+        using var cts = new CancellationTokenSource();
+        CancellationToken received = default;
+
+        var value = await legacy.GetOrSetAsync("k", t => { received = t; return Task.FromResult("a"); }, Expiry, cts.Token);
+
+        Assert.Equal("a", value);
+        Assert.Equal(["k"], ((LegacyCache)legacy).Keys);
+        Assert.Equal(cts.Token, received);
+    }
 }

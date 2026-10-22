@@ -32,8 +32,9 @@ dotnet add package TWStockLib.Core
 
 - 獲取上市（TSE）與上櫃（OTC）股票清單，含證券類型、產業別、ISIN 與上市日；可依證券類型過濾，預設排除權證與牛熊證
 - 獲取股票歷史日成交資料（跨月自動合併，上市與上櫃單位一致）
-- 獲取股票即時報價（含最佳五檔）
-- 以 `await foreach` 追蹤成交價變動
+- 獲取股票即時報價（含最佳五檔），可一次查多檔（同一市場每 50 檔只需一個請求）
+- 以 `await foreach` 追蹤一檔或多檔的成交價變動
+- 可不指定市場，依股票清單自動判斷上市或上櫃
 - 內建快取，減少對上游的請求；同時發生的相同查詢只向上游要一次
 - 內建每主機限流，長區間歷史查詢與多檔追蹤不會讓證交所封鎖你的 IP
 - 快取時間、限流可設定；可在 HttpClient 上自行加上重試（不強迫相依 Polly）
@@ -88,6 +89,8 @@ var value = result.GetValueOrThrow();                   // 偏好例外流程：
 
 - 呼叫端用 `CancellationToken` 取消時，照 .NET 慣例拋出 `OperationCanceledException`，不會變成失敗結果。
 - 參數本身不合法（空白代號、起日晚於迄日）時拋出 `ArgumentException`。
+  代號只接受 1 到 10 個英文字母或數字（例如 `2330`、`00631L`、指數 `t00`），區分大小寫；
+  其他字元（例如 `2330.tw|tse_2317`）會改寫送給上游的查詢，一律拒絕。
 
 #### 股票清單
 
@@ -178,6 +181,47 @@ var fresh = await stock.GetRealtimeQuoteAsync("2330", MarketType.TSE, QuoteOptio
 > 盤前尚未有第一筆成交時 `LastPrice` 為 `null`。`SyncTime` 是台灣時間（`+08:00`）的 `DateTimeOffset`。
 > 查無代號、或代號不屬於指定的市場（例如以 `MarketType.OTC` 查 2330）時回傳 `NOT_FOUND`。
 
+#### 一次查多檔
+
+```csharp
+string[] watchlist = ["2330", "2317", "6510"];
+var quotes = await stock.GetRealtimeQuotesAsync(
+    [("2330", MarketType.TSE), ("2317", MarketType.TSE), ("6510", MarketType.OTC)]);
+
+foreach (var symbol in watchlist)
+{
+    var result = quotes[symbol];   // 每個傳入的代號恰好一筆
+    Console.WriteLine(result.TryGetValue(out var q)
+        ? $"{q.Symbol} {q.Name} {q.LastPrice}"
+        : $"{symbol} {result.ErrorCode}: {result.ErrorMessage}");
+}
+```
+
+- 同一市場的代號合併成一個請求（MIS 一次可查多檔，內建來源每 50 檔一個請求）；上市與上櫃各一個。
+  逐檔呼叫 `GetRealtimeQuoteAsync` 查 10 檔要 10 個請求，受[限流](#限流)影響約需 15 秒；批次查詢只要 1～2 個。
+- 回傳以代號為 key 的字典，**每一檔各自成功或失敗**：查無代號（或市場錯誤）為 `NOT_FOUND`、不支援的市場為
+  `SOURCE_NOT_FOUND`；上游失敗時，同一市場這次查詢的每一檔都是同一個失敗結果。字典不保證順序，請依自己的清單取值。
+- 快取以每一檔為單位，與單檔查詢共用：已快取的代號不會再查上游；`QuoteOptions.NoCache` 一律重查並更新快取。
+- 重複的代號只查一次；同一代號指定兩個不同市場時拋出 `ArgumentException`。
+
+#### 不指定市場
+
+不確定代號是上市還是上櫃時，可省略 `MarketType`，函式庫會依股票清單（`GetStockListAsync`，不含權證）判斷：
+
+```csharp
+var quote = await stock.GetRealtimeQuoteAsync("6510");                    // 上櫃
+var quotes = await stock.GetRealtimeQuotesAsync(["2330", "6510", "0050"]);
+var history = await stock.GetHistoricalDataAsync("2330", new DateOnly(2025, 9, 1), new DateOnly(2025, 9, 30));
+await foreach (var q in stock.WatchAsync(["2330", "6510"], ct: stoppingToken)) { /* … */ }
+```
+
+- **第一次呼叫要下載股票清單**：每個市場一頁 ISIN 網頁，上市約 9.7 MB、上櫃約 3.2 MB，上游傳得慢，
+  實測（2026-10）上市 12～78 秒、上櫃 16～24 秒；之後快取 `StockListCacheDuration`（預設 1 天）。
+  依上市、上櫃的順序找到就停，只查上市股票時不會下載上櫃清單。
+  不想讓第一個使用者等，可在啟動時先呼叫一次 `GetAllStockListAsync()` 預熱；若自行加了重試，逾時請參考[HttpClient 與重試](#httpclient-與重試)放寬。
+- 不在清單中的代號回傳 `NOT_FOUND`，包括打錯的代號、指數（`t00`）與權證；這些請改用指定市場的多載。
+- 股票清單取得失敗時回傳該失敗（例如 `UPSTREAM_ERROR`），不會誤報成 `NOT_FOUND`；追蹤時則在下一輪重試。
+
 #### 追蹤成交價
 
 ```csharp
@@ -188,6 +232,21 @@ await foreach (var quote in stock.WatchAsync("2330", MarketType.TSE, ct: stoppin
 - 先回傳一次目前的報價，之後每隔 `interval`（預設與最短皆為 5 秒）略過快取查詢，只在成交價變動時回傳。
 - 上游暫時失敗會記錄後在下一輪重試；查無此代號時拋出 `StockQueryException`（`ErrorCode` 為 `NOT_FOUND`）。
 - 以 `CancellationToken` 結束追蹤，結束時拋出 `OperationCanceledException`。
+
+同時追蹤多檔請用多檔的多載，每一輪一次批次查詢，而不是每檔各開一個 `WatchAsync`：
+
+```csharp
+await foreach (var quote in stock.WatchAsync(
+    [("2330", MarketType.TSE), ("2317", MarketType.TSE), ("6510", MarketType.OTC)], ct: stoppingToken))
+{
+    Console.WriteLine($"{quote.Symbol} {quote.LastPrice}");
+}
+```
+
+- 每一檔第一次查到時回傳一次，之後只回傳成交價有變動的那幾檔（同一輪內依傳入的順序）。
+- 每一輪每個市場一個請求（每 50 檔一個）：預設限流下，一輪 3 個請求以內（例如上市 100 檔 + 上櫃 50 檔）仍能維持 5 秒的間隔。
+- 還沒查到過的代號回 `NOT_FOUND` 時拋出 `StockQueryException`（多半是代號或市場打錯）；已經查到過的代號之後查無資料、
+  或某個市場暫時失敗，只記錄並在下一輪重試，不中斷其他代號。
 
 ## 設定
 
@@ -223,7 +282,8 @@ services.AddTwStock(options =>
 `isin.twse.com.tw`）分開計算：任何 5 秒內最多送出 3 個請求，超過的請求排隊等候，不會失敗。
 
 - 歷史資料一個月一個請求：查一整年（12 個月）約需 15 秒。查歷史不會拖慢即時報價，兩者是不同主機。
-- `WatchAsync` 同時追蹤超過 3 檔時，每檔的實際更新間隔會被拉長（例如 6 檔約每 10 秒一次）。
+- 逐檔查報價、或每檔各開一個 `WatchAsync` 時，超過 3 檔就會排隊（例如 6 檔約每 10 秒一次）。
+  多檔請改用 `GetRealtimeQuotesAsync` 與多檔的 `WatchAsync`，同一市場每 50 檔只需一個請求。
 - 排隊的時間也算在 HttpClient 的逾時內；呼叫端可用 `CancellationToken` 放棄等候。
 - 限流在 HttpClient 管線的最內層，自行加上的重試每一次實際送出也都會計入。
 - 同一個應用程式內共用額度；多個行程或多台機器共用同一個對外 IP 時，額度不會合併計算，請自行調低 `PermitLimit`。
@@ -266,6 +326,9 @@ services.AddHttpClient(TwStockOptions.HttpClientName)
   services.AddSingleton<IStockDataSource, MyBrokerTseSource>();   // Market => MarketType.TSE，取代內建的上市來源
   ```
 
+  批次報價用的 `FetchRealtimeQuotesAsync` 有預設實作（逐檔呼叫 `FetchRealtimeQuoteAsync`），不必實作；
+  上游支援一次查多檔時再覆寫，以減少請求數。
+
 - **替換快取**：在 `AddTwStock()` 之前註冊自己的 `ICacheService`，會保留你的實作。
   帶 `CancellationToken` 的 `GetOrSetAsync` 多載有預設實作，可以不實作；內建的 `MemoryCacheService` 用它把
   同一個 key 同時發生的未命中合併成一次上游請求，自訂快取若要同樣的效果再自行實作。
@@ -278,7 +341,7 @@ services.AddHttpClient(TwStockOptions.HttpClientName)
 |--------|------|
 | `SOURCE_NOT_FOUND` | 找不到對應市場的資料來源 |
 | `NOT_FOUND` | 上游查無此股票 / 無資料 |
-| `UPSTREAM_ERROR` | 上游連線或回應錯誤 |
+| `UPSTREAM_ERROR` | 上游連線或回應錯誤，包括 MIS 拒絕查詢（`rtcode` 不是 `0000`） |
 | `TIMEOUT` | 上游在 HttpClient 逾時內沒有回應（2.3.0 起） |
 | `PARSE_ERROR` | 上游回應的格式無法解析，例如被擋下時回傳的錯誤頁（3.0.0 起） |
 

@@ -1,27 +1,32 @@
 using System.Collections.Frozen;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using TWStockLib.Abstractions;
 using TWStockLib.Models;
-using TWStockLib.Observer;
 
 namespace TWStockLib.Services;
 
 /// <summary>
 /// 對外門面（Facade）：依 <see cref="MarketType"/> 路由到對應的 <see cref="IStockDataSource"/>，
-/// 統一例外處理為 <see cref="StockResult{T}"/>，並在報價更新時通知價格觀察者。
+/// 並把查無資料與上游例外統一收斂為 <see cref="StockResult{T}"/>。
 /// 呼叫端取消（<see cref="CancellationToken"/>）時照 .NET 慣例拋出 <see cref="OperationCanceledException"/>；
 /// 參數本身不合法（例如空白代號）時拋出 <see cref="ArgumentException"/>。
 /// </summary>
 public sealed class StockMarketService : IStockMarketService
 {
-    private readonly StockPriceSubject _priceSubject = new();
+    /// <summary>MIS 約每 5 秒更新一次，追蹤得更頻繁只會增加被上游限流的風險。</summary>
+    private static readonly TimeSpan MinimumWatchInterval = TimeSpan.FromSeconds(5);
+
     private readonly IReadOnlyDictionary<MarketType, IStockDataSource> _sources;
     private readonly ILogger<StockMarketService> _logger;
+    private readonly TimeProvider _timeProvider;
 
     /// <param name="sources">各市場的資料來源；同一市場註冊多個時以最後註冊的為準（與 DI 的單一解析慣例一致）。</param>
     /// <param name="logger">記錄上游失敗。</param>
-    public StockMarketService(IEnumerable<IStockDataSource> sources, ILogger<StockMarketService> logger)
+    /// <param name="timeProvider"><see cref="WatchAsync"/> 輪詢間隔的時間來源；未指定時使用系統時間。</param>
+    public StockMarketService(
+        IEnumerable<IStockDataSource> sources, ILogger<StockMarketService> logger, TimeProvider? timeProvider = null)
     {
         var byMarket = new Dictionary<MarketType, IStockDataSource>();
         foreach (var source in sources)
@@ -29,38 +34,16 @@ public sealed class StockMarketService : IStockMarketService
 
         _sources = byMarket;
         _logger = logger;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(
         string symbol, MarketType market, QuoteOptions? options = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
-        return GetRealtimeQuoteCoreAsync(symbol, market, options ?? QuoteOptions.Default, ct);
-    }
 
-    private async Task<StockResult<StockQuote>> GetRealtimeQuoteCoreAsync(
-        string symbol, MarketType market, QuoteOptions options, CancellationToken ct)
-    {
-        var result = await QueryAsync(market, $"{symbol} 即時報價",
-            async source => await source.FetchRealtimeQuoteAsync(symbol, options, ct), ct);
-
-        if (result.IsSuccess && result.Value.LastPrice is { } lastPrice)
-            NotifyPriceObservers(symbol, lastPrice);
-
-        return result;
-    }
-
-    /// <summary>觀察者的例外屬於呼叫端自己的程式，只記錄、不影響已成功取得的報價。</summary>
-    private void NotifyPriceObservers(string symbol, decimal price)
-    {
-        try
-        {
-            _priceSubject.UpdatePrice(symbol, price);
-        }
-        catch (AggregateException ex)
-        {
-            _logger.LogWarning(ex, "價格觀察者處理 {Symbol} 的價格變動時發生例外", symbol);
-        }
+        return QueryAsync(market, $"{symbol} 即時報價",
+            async source => await source.FetchRealtimeQuoteAsync(symbol, options ?? QuoteOptions.Default, ct), ct);
     }
 
     public Task<StockResult<IReadOnlyList<StockHistory>>> GetHistoricalDataAsync(
@@ -96,11 +79,47 @@ public sealed class StockMarketService : IStockMarketService
         return StockResult<IReadOnlyDictionary<string, StockData>>.Ok(merged.ToFrozenDictionary());
     }
 
-    public void SubscribePriceChanges(string symbol, IStockPriceObserver observer)
-        => _priceSubject.Subscribe(symbol, observer);
+    public IAsyncEnumerable<StockQuote> WatchAsync(
+        string symbol, MarketType market, TimeSpan? interval = null, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
+        if (!_sources.ContainsKey(market))
+            throw new ArgumentException($"不支援的市場：{market}", nameof(market));
+        var pollInterval = interval ?? MinimumWatchInterval;
+        ArgumentOutOfRangeException.ThrowIfLessThan(pollInterval, MinimumWatchInterval, nameof(interval));
 
-    public void UnsubscribePriceChanges(string symbol, IStockPriceObserver observer)
-        => _priceSubject.Unsubscribe(symbol, observer);
+        return WatchCoreAsync(symbol, market, pollInterval, ct);
+    }
+
+    private async IAsyncEnumerable<StockQuote> WatchCoreAsync(
+        string symbol, MarketType market, TimeSpan interval, [EnumeratorCancellation] CancellationToken ct)
+    {
+        StockQuote? previous = null;
+        while (true)
+        {
+            var result = await GetRealtimeQuoteAsync(symbol, market, QuoteOptions.NoCache, ct);
+            if (result.IsSuccess)
+            {
+                if (previous is null || result.Value.LastPrice != previous.LastPrice)
+                {
+                    previous = result.Value;
+                    yield return result.Value;
+                }
+            }
+            else if (result.ErrorCode == StockErrorCodes.NotFound)
+            {
+                // 代號打錯不會自己好，繼續輪詢只是空轉
+                throw new StockQueryException(result.ErrorCode, result.ErrorMessage, result.Exception);
+            }
+            else
+            {
+                _logger.LogWarning("追蹤 {Symbol} 時查詢失敗，{Interval} 後重試：{ErrorCode} {ErrorMessage}",
+                    symbol, interval, result.ErrorCode, result.ErrorMessage);
+            }
+
+            await Task.Delay(interval, _timeProvider, ct);
+        }
+    }
 
     /// <summary>
     /// 依市場找到資料來源並執行查詢：查無資料（<c>null</c>）與上游例外都收斂成失敗結果；

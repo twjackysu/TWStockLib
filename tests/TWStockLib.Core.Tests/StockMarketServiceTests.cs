@@ -207,46 +207,6 @@ public class StockMarketServiceTests
         await tse.Received(1).FetchRealtimeQuoteAsync("2330", QuoteOptions.Default, cts.Token);
     }
 
-    [Fact]
-    public async Task GetRealtimeQuoteAsync_NoCache_StillNotifiesPriceObservers()
-    {
-        var tse = FakeSource(MarketType.TSE);
-        tse.FetchRealtimeQuoteAsync("2330", Arg.Any<QuoteOptions>(), Arg.Any<CancellationToken>())
-           .Returns(Quote(1000m), Quote(1010m));
-        var service = BuildService(tse);
-        var observer = Substitute.For<IStockPriceObserver>();
-        service.SubscribePriceChanges("2330", observer);
-
-        await service.GetRealtimeQuoteAsync("2330", MarketType.TSE, QuoteOptions.NoCache);
-        await service.GetRealtimeQuoteAsync("2330", MarketType.TSE, QuoteOptions.NoCache);
-
-        observer.Received(1).OnPriceChanged("2330", 1010m, 1000m);
-    }
-
-    // ── 觀察者的例外不影響查詢結果 ─────────────────────────────────────────────
-
-    [Fact]
-    public async Task GetRealtimeQuoteAsync_AnObserverThrows_StillReturnsTheQuote_AndNotifiesTheOthers()
-    {
-        var tse = FakeSource(MarketType.TSE);
-        tse.FetchRealtimeQuoteAsync("2330", Arg.Any<QuoteOptions>(), Arg.Any<CancellationToken>())
-           .Returns(Quote(1000m), Quote(1010m));
-        var service = BuildService(tse);
-        var faulty = Substitute.For<IStockPriceObserver>();
-        faulty.When(o => o.OnPriceChanged(Arg.Any<string>(), Arg.Any<decimal>(), Arg.Any<decimal>()))
-              .Do(_ => throw new InvalidOperationException("observer bug"));
-        var healthy = Substitute.For<IStockPriceObserver>();
-        service.SubscribePriceChanges("2330", faulty);
-        service.SubscribePriceChanges("2330", healthy);
-
-        await service.GetRealtimeQuoteAsync("2330", MarketType.TSE);
-        var result = await service.GetRealtimeQuoteAsync("2330", MarketType.TSE);
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal(1010m, result.Value!.LastPrice);
-        healthy.Received(1).OnPriceChanged("2330", 1010m, 1000m);
-    }
-
     // ── 取消與逾時 ────────────────────────────────────────────────────────────
 
     private static readonly Dictionary<string, Func<IStockMarketService, CancellationToken, Task<string?>>> Queries = new()

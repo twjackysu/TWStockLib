@@ -22,24 +22,48 @@ internal static class TwseStockParser
     private const int IsinIndustryColumn = 4;
     private const int IsinCfiCodeColumn = 5;
 
+    /// <summary>MIS 正常回應的 rtcode。</summary>
+    private const string MisOkCode = "0000";
+
     private static readonly TimeSpan TaiwanUtcOffset = TimeSpan.FromHours(8);
 
+    /// <summary>解析只查一檔的 MIS 回應；查無資料回 <c>null</c>。</summary>
     public static StockQuote? ParseRealtimeQuote(string json, MarketType market)
+        => ParseRealtimeQuotes(json, market) is [var quote, ..] ? quote : null;
+
+    /// <summary>
+    /// 解析 MIS 回應中的每一檔報價。一次查多檔（<c>ex_ch</c> 以「|」串接）時，上游依查詢順序每檔回一筆；
+    /// 查無此代號、或代號不屬於這個市場（例如以上櫃查 2330）時，該檔是一筆代號為空的佔位資料，略過不回傳。
+    /// </summary>
+    /// <exception cref="HttpRequestException">
+    /// 上游拒絕這次查詢（rtcode 不是 0000，例如一次查太多檔時的 9999「參數不足」）。此時沒有任何報價，
+    /// 不能當成每一檔都查無資料。
+    /// </exception>
+    public static IReadOnlyList<StockQuote> ParseRealtimeQuotes(string json, MarketType market)
     {
         using var doc = JsonDocument.Parse(json);
-        if (!doc.RootElement.TryGetProperty("msgArray", out var msgArray)
-            || msgArray.ValueKind != JsonValueKind.Array
-            || msgArray.GetArrayLength() == 0)
+        var root = doc.RootElement;
+        if (root.TryGetProperty("rtcode", out var rtcode)
+            && rtcode.ValueKind == JsonValueKind.String
+            && rtcode.GetString() != MisOkCode)
         {
-            return null;
+            throw new HttpRequestException($"MIS 拒絕了這次查詢：{rtcode.GetString()} {GetString(root, "rtmessage")}");
         }
 
-        // 查無此代號、或代號不屬於這個市場（例如以上櫃查 2330）時，上游仍回一筆代號為空的佔位資料
-        var item = msgArray[0];
-        if (string.IsNullOrEmpty(GetString(item, "c")))
-            return null;
+        if (!root.TryGetProperty("msgArray", out var msgArray) || msgArray.ValueKind != JsonValueKind.Array)
+            return [];
 
-        return new StockQuote
+        var quotes = new List<StockQuote>(msgArray.GetArrayLength());
+        foreach (var item in msgArray.EnumerateArray())
+        {
+            if (!string.IsNullOrEmpty(GetString(item, "c")))
+                quotes.Add(MapQuote(item, market));
+        }
+        return quotes.AsReadOnly();
+    }
+
+    private static StockQuote MapQuote(JsonElement item, MarketType market)
+        => new()
         {
             Symbol = GetString(item, "c"),
             Market = market,
@@ -57,7 +81,6 @@ internal static class TwseStockParser
             LimitUp = GetNullableDecimal(item, "u"),
             LimitDown = GetNullableDecimal(item, "w"),
         };
-    }
 
     public static IReadOnlyList<StockHistory> ParseTwseHistory(string json)
     {

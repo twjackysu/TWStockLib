@@ -43,7 +43,8 @@ public class ServiceCollectionExtensionsTests
 
     private sealed class CustomCache : ICacheService
     {
-        public Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan? expiry = null) => factory();
+        public Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry) => factory();
+        public Task<T> RefreshAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry) => factory();
     }
 
     [Fact]

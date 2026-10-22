@@ -37,19 +37,20 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
     /// <summary>ISIN 股票清單頁的 strMode：上市 2、上櫃 4。</summary>
     protected abstract int IsinStrMode { get; }
 
-    public Task<StockQuote?> FetchRealtimeQuoteAsync(string symbol, CancellationToken ct = default)
-        => FetchRealtimeQuoteAsync(symbol, bypassCache: false, ct);
-
-    public Task<StockQuote?> FetchRealtimeQuoteAsync(string symbol, bool bypassCache, CancellationToken ct = default)
+    public Task<StockQuote?> FetchRealtimeQuoteAsync(string symbol, QuoteOptions options, CancellationToken ct = default)
     {
         var cacheKey = $"realtime_quote_{Market}_{symbol}";
-        return Cache.GetOrSetAsync(cacheKey, async () =>
+        async Task<StockQuote?> Fetch()
         {
             var exCh = $"{MarketKeyPrefix}_{symbol}.tw";
             var url = $"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={exCh}&json=1&delay=0&_={DateTime.UtcNow.Ticks}";
             var json = await Fetcher.GetStringAsync(url, ct);
             return TwseStockParser.ParseRealtimeQuote(json, Market);
-        }, QuoteTtl, bypassCache);
+        }
+
+        return options.BypassCache
+            ? Cache.RefreshAsync(cacheKey, Fetch, QuoteTtl)
+            : Cache.GetOrSetAsync(cacheKey, Fetch, QuoteTtl);
     }
 
     public async Task<IReadOnlyList<StockHistory>> FetchHistoricalDataAsync(

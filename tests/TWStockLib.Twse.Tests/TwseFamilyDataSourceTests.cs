@@ -34,8 +34,8 @@ public class TwseFamilyDataSourceTests
         var fetcher = new FakeFetcher(Json("600.00"), Json("610.00"));
         var source = Build(fetcher);
 
-        var first = await source.FetchRealtimeQuoteAsync("2330");
-        var second = await source.FetchRealtimeQuoteAsync("2330");
+        var first = await source.FetchRealtimeQuoteAsync("2330", QuoteOptions.Default);
+        var second = await source.FetchRealtimeQuoteAsync("2330", QuoteOptions.Default);
 
         Assert.Equal(600.00m, first!.LastPrice);
         Assert.Same(first, second);
@@ -43,41 +43,41 @@ public class TwseFamilyDataSourceTests
     }
 
     [Fact]
-    public async Task FetchRealtimeQuoteAsync_BypassCache_HitsTheUpstreamAgain()
+    public async Task FetchRealtimeQuoteAsync_NoCache_HitsTheUpstreamAgain()
     {
         var fetcher = new FakeFetcher(Json("600.00"), Json("610.00"));
         var source = Build(fetcher);
-        await source.FetchRealtimeQuoteAsync("2330");
+        await source.FetchRealtimeQuoteAsync("2330", QuoteOptions.Default);
 
-        var fresh = await source.FetchRealtimeQuoteAsync("2330", bypassCache: true);
+        var fresh = await source.FetchRealtimeQuoteAsync("2330", QuoteOptions.NoCache);
 
         Assert.Equal(610.00m, fresh!.LastPrice);
         Assert.Equal(2, fetcher.Urls.Count);
     }
 
     [Fact]
-    public async Task FetchRealtimeQuoteAsync_AfterABypass_NormalCallsSeeTheNewerQuote()
+    public async Task FetchRealtimeQuoteAsync_AfterANoCacheCall_NormalCallsSeeTheNewerQuote()
     {
         var fetcher = new FakeFetcher(Json("600.00"), Json("610.00"), Json("620.00"));
         var source = Build(fetcher);
-        await source.FetchRealtimeQuoteAsync("2330");
-        await source.FetchRealtimeQuoteAsync("2330", bypassCache: true);
+        await source.FetchRealtimeQuoteAsync("2330", QuoteOptions.Default);
+        await source.FetchRealtimeQuoteAsync("2330", QuoteOptions.NoCache);
 
-        var later = await source.FetchRealtimeQuoteAsync("2330");
+        var later = await source.FetchRealtimeQuoteAsync("2330", QuoteOptions.Default);
 
         Assert.Equal(610.00m, later!.LastPrice);
         Assert.Equal(2, fetcher.Urls.Count);
     }
 
     [Fact]
-    public async Task FetchRealtimeQuoteAsync_Bypass_DoesNotTouchOtherSymbols()
+    public async Task FetchRealtimeQuoteAsync_NoCache_DoesNotTouchOtherSymbols()
     {
         var fetcher = new FakeFetcher(Json("600.00"));
         var source = Build(fetcher);
-        await source.FetchRealtimeQuoteAsync("2330");
+        await source.FetchRealtimeQuoteAsync("2330", QuoteOptions.Default);
 
-        await source.FetchRealtimeQuoteAsync("2317", bypassCache: true);
-        await source.FetchRealtimeQuoteAsync("2330");
+        await source.FetchRealtimeQuoteAsync("2317", QuoteOptions.NoCache);
+        await source.FetchRealtimeQuoteAsync("2330", QuoteOptions.Default);
 
         Assert.Equal(2, fetcher.Urls.Count);
         Assert.Contains("ex_ch=tse_2317.tw", fetcher.Urls[1]);
@@ -91,7 +91,7 @@ public class TwseFamilyDataSourceTests
             "{\"msgArray\":[{\"c\":\"t00\",\"n\":\"發行量加權股價指數\",\"z\":\"23100.12\",\"y\":\"22950.00\",\"u\":\"-\",\"w\":\"-\",\"tlong\":\"1791782705000\"}]}");
         var source = Build(fetcher);
 
-        var quote = await source.FetchRealtimeQuoteAsync("t00", bypassCache: true);
+        var quote = await source.FetchRealtimeQuoteAsync("t00", QuoteOptions.NoCache);
 
         Assert.Contains("ex_ch=tse_t00.tw", fetcher.Urls[0]);
         Assert.Equal(23100.12m, quote!.LastPrice);
@@ -106,7 +106,7 @@ public class TwseFamilyDataSourceTests
         var fetcher = new FakeFetcher(
             "{\"msgArray\":[{\"c\":\"t00\",\"z\":\"-\",\"y\":\"22950.00\",\"u\":\"-\",\"w\":\"-\",\"tlong\":\"1791782705000\"}]}");
 
-        var quote = await Build(fetcher).FetchRealtimeQuoteAsync("t00", bypassCache: true);
+        var quote = await Build(fetcher).FetchRealtimeQuoteAsync("t00", QuoteOptions.NoCache);
 
         Assert.Null(quote!.LastPrice);
         Assert.Equal(22950.00m, quote.YesterdayClosingPrice);
@@ -116,13 +116,16 @@ public class TwseFamilyDataSourceTests
 
     private sealed class RecordingCache : ICacheService
     {
-        public Dictionary<string, TimeSpan?> Expiries { get; } = [];
+        public Dictionary<string, TimeSpan> Expiries { get; } = [];
 
-        public Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan? expiry = null)
+        public Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry)
         {
             Expiries[key] = expiry;
             return factory();
         }
+
+        public Task<T> RefreshAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry)
+            => GetOrSetAsync(key, factory, expiry);
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider

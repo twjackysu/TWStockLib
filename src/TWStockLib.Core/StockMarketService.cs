@@ -29,18 +29,8 @@ public class StockMarketService : IStockMarketService
         _logger = logger;
     }
 
-    public Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(
-        string symbol, MarketType market, CancellationToken ct = default)
-        => GetRealtimeQuoteCoreAsync(symbol, market, source => source.FetchRealtimeQuoteAsync(symbol, ct), ct);
-
-    public Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(
-        string symbol, MarketType market, bool bypassCache, CancellationToken ct = default)
-        => bypassCache
-            ? GetRealtimeQuoteCoreAsync(symbol, market, source => source.FetchRealtimeQuoteAsync(symbol, bypassCache: true, ct), ct)
-            : GetRealtimeQuoteAsync(symbol, market, ct);
-
-    private async Task<StockResult<StockQuote>> GetRealtimeQuoteCoreAsync(
-        string symbol, MarketType market, Func<IStockDataSource, Task<StockQuote?>> fetch, CancellationToken ct)
+    public async Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(
+        string symbol, MarketType market, QuoteOptions? options = null, CancellationToken ct = default)
     {
         if (!_sources.TryGetValue(market, out var source))
             return StockResult<StockQuote>.Fail(StockErrorCodes.SourceNotFound, $"不支援的市場：{market}");
@@ -48,7 +38,7 @@ public class StockMarketService : IStockMarketService
         StockQuote? quote;
         try
         {
-            quote = await fetch(source);
+            quote = await source.FetchRealtimeQuoteAsync(symbol, options ?? QuoteOptions.Default, ct);
         }
         catch (Exception ex) when (!IsCallerCancellation(ex, ct))
         {

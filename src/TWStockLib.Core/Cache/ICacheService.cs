@@ -1,13 +1,14 @@
 namespace TWStockLib.Cache;
 
+/// <summary>資料來源使用的快取。<c>null</c> 代表查無資料，不會被快取。</summary>
 public interface ICacheService
 {
-    Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan? expiry = null);
+    /// <summary>有快取就直接回傳；否則執行 <paramref name="factory"/>，並把結果快取 <paramref name="expiry"/>。</summary>
+    Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry);
 
     /// <summary>
-    /// 同上；<paramref name="bypassCache"/> 為 <c>true</c> 時略過既有的快取內容，一律執行 <paramref name="factory"/>。
-    /// 預設實作只做到「略過」，不會把結果寫回快取；有實際快取的實作應覆寫，讓略過之後的一般呼叫拿到較新的值。
+    /// 一律執行 <paramref name="factory"/>，並以結果覆寫快取；結果為 <c>null</c> 時保留原本的快取值，
+    /// 避免一次查無資料就把先前取得的有效值洗掉。
     /// </summary>
-    Task<T> GetOrSetAsync<T>(string key, Func<Task<T>> factory, TimeSpan? expiry, bool bypassCache)
-        => bypassCache ? factory() : GetOrSetAsync(key, factory, expiry);
+    Task<T> RefreshAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiry);
 }

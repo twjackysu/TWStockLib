@@ -14,6 +14,9 @@ public class StockMarketServiceTests
     private static StockMarketService BuildService(params IStockDataSource[] sources)
         => new(sources, NullLogger<StockMarketService>.Instance);
 
+    private static StockQuote Quote(decimal lastPrice)
+        => new() { Symbol = "2330", Name = "台積電", Market = MarketType.TSE, LastPrice = lastPrice };
+
     // ── 路由 ────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -32,14 +35,14 @@ public class StockMarketServiceTests
     {
         var tse = FakeSource(MarketType.TSE);
         var otc = FakeSource(MarketType.OTC);
-        var quote = new StockQuote { Symbol = "2330", Name = "台積電", Market = MarketType.TSE, LastPrice = 1000m };
-        tse.FetchRealtimeQuoteAsync("2330", Arg.Any<CancellationToken>()).Returns(quote);
+        var quote = Quote(1000m);
+        tse.FetchRealtimeQuoteAsync("2330", Arg.Any<QuoteOptions>(), Arg.Any<CancellationToken>()).Returns(quote);
 
         var result = await BuildService(tse, otc).GetRealtimeQuoteAsync("2330", MarketType.TSE);
 
         Assert.True(result.IsSuccess);
-        Assert.Equivalent(quote, result.Value);
-        await otc.DidNotReceive().FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        Assert.Same(quote, result.Value);
+        await otc.DidNotReceive().FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<QuoteOptions>(), Arg.Any<CancellationToken>());
     }
 
     // ── 成功 / 失敗收斂 ───────────────────────────────────────────────────────
@@ -48,7 +51,7 @@ public class StockMarketServiceTests
     public async Task GetRealtimeQuoteAsync_SourceReturnsNull_ReturnsNotFound()
     {
         var tse = FakeSource(MarketType.TSE);
-        tse.FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+        tse.FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<QuoteOptions>(), Arg.Any<CancellationToken>())
            .Returns((StockQuote?)null);
 
         var result = await BuildService(tse).GetRealtimeQuoteAsync("9999", MarketType.TSE);
@@ -61,7 +64,7 @@ public class StockMarketServiceTests
     public async Task GetRealtimeQuoteAsync_SourceThrows_ReturnsUpstreamError()
     {
         var tse = FakeSource(MarketType.TSE);
-        tse.FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+        tse.FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<QuoteOptions>(), Arg.Any<CancellationToken>())
            .Returns<StockQuote?>(_ => throw new HttpRequestException("boom"));
 
         var result = await BuildService(tse).GetRealtimeQuoteAsync("2330", MarketType.TSE);
@@ -106,81 +109,56 @@ public class StockMarketServiceTests
         Assert.False(result.IsSuccess);
         Assert.Equal(StockErrorCodes.SourceNotFound, result.ErrorCode);
     }
-    // ── 略過快取（bypassCache）──────────────────────────────────────────────────
+
+    // ── 報價選項 ──────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task GetRealtimeQuoteAsync_BypassCache_AsksTheSourceToBypass()
+    public async Task GetRealtimeQuoteAsync_WithoutOptions_UsesTheDefaults()
     {
         var tse = FakeSource(MarketType.TSE);
-        var quote = new StockQuote { Symbol = "2330", Name = "台積電", Market = MarketType.TSE, LastPrice = 1000m };
-        tse.FetchRealtimeQuoteAsync("2330", true, Arg.Any<CancellationToken>()).Returns(quote);
+        tse.FetchRealtimeQuoteAsync("2330", Arg.Any<QuoteOptions>(), Arg.Any<CancellationToken>()).Returns(Quote(1000m));
 
-        var result = await BuildService(tse).GetRealtimeQuoteAsync("2330", MarketType.TSE, bypassCache: true);
+        await BuildService(tse).GetRealtimeQuoteAsync("2330", MarketType.TSE);
 
-        Assert.True(result.IsSuccess);
-        Assert.Equivalent(quote, result.Value);
-        await tse.DidNotReceive().FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await tse.Received(1).FetchRealtimeQuoteAsync("2330", QuoteOptions.Default, Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task GetRealtimeQuoteAsync_NoBypass_KeepsUsingTheOriginalSourceMethod()
+    public async Task GetRealtimeQuoteAsync_NoCache_IsPassedToTheSource()
     {
-        // 既有的 IStockDataSource 實作／mock 只認得舊方法：bypassCache=false 必須走舊路徑，行為與升級前一致。
         var tse = FakeSource(MarketType.TSE);
-        var quote = new StockQuote { Symbol = "2330", Name = "台積電", Market = MarketType.TSE, LastPrice = 1000m };
-        tse.FetchRealtimeQuoteAsync("2330", Arg.Any<CancellationToken>()).Returns(quote);
+        var quote = Quote(1000m);
+        tse.FetchRealtimeQuoteAsync("2330", Arg.Is<QuoteOptions>(o => o.BypassCache), Arg.Any<CancellationToken>()).Returns(quote);
 
-        var result = await BuildService(tse).GetRealtimeQuoteAsync("2330", MarketType.TSE, bypassCache: false);
+        var result = await BuildService(tse).GetRealtimeQuoteAsync("2330", MarketType.TSE, QuoteOptions.NoCache);
 
-        Assert.Equivalent(quote, result.Value);
-        await tse.DidNotReceive().FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+        Assert.Same(quote, result.Value);
     }
 
     [Fact]
-    public async Task GetRealtimeQuoteAsync_BypassCache_UnknownMarket_ReturnsSourceNotFound()
+    public async Task GetRealtimeQuoteAsync_TheCancellationTokenOnlyOverload_UsesTheDefaults()
     {
-        var result = await BuildService(FakeSource(MarketType.TSE))
-            .GetRealtimeQuoteAsync("2330", MarketType.OTC, bypassCache: true);
+        var tse = FakeSource(MarketType.TSE);
+        using var cts = new CancellationTokenSource();
+        tse.FetchRealtimeQuoteAsync("2330", Arg.Any<QuoteOptions>(), Arg.Any<CancellationToken>()).Returns(Quote(1000m));
 
-        Assert.Equal(StockErrorCodes.SourceNotFound, result.ErrorCode);
+        await BuildService(tse).GetRealtimeQuoteAsync("2330", MarketType.TSE, cts.Token);
+
+        await tse.Received(1).FetchRealtimeQuoteAsync("2330", QuoteOptions.Default, cts.Token);
     }
 
     [Fact]
-    public async Task GetRealtimeQuoteAsync_BypassCache_SourceReturnsNull_ReturnsNotFound()
+    public async Task GetRealtimeQuoteAsync_NoCache_StillNotifiesPriceObservers()
     {
         var tse = FakeSource(MarketType.TSE);
-        tse.FetchRealtimeQuoteAsync(Arg.Any<string>(), true, Arg.Any<CancellationToken>()).Returns((StockQuote?)null);
-
-        var result = await BuildService(tse).GetRealtimeQuoteAsync("9999", MarketType.TSE, bypassCache: true);
-
-        Assert.Equal(StockErrorCodes.NotFound, result.ErrorCode);
-    }
-
-    [Fact]
-    public async Task GetRealtimeQuoteAsync_BypassCache_SourceThrows_ReturnsUpstreamError()
-    {
-        var tse = FakeSource(MarketType.TSE);
-        tse.FetchRealtimeQuoteAsync(Arg.Any<string>(), true, Arg.Any<CancellationToken>())
-           .Returns<StockQuote?>(_ => throw new HttpRequestException("boom"));
-
-        var result = await BuildService(tse).GetRealtimeQuoteAsync("2330", MarketType.TSE, bypassCache: true);
-
-        Assert.Equal(StockErrorCodes.UpstreamError, result.ErrorCode);
-    }
-
-    [Fact]
-    public async Task GetRealtimeQuoteAsync_BypassCache_StillNotifiesPriceObservers()
-    {
-        var tse = FakeSource(MarketType.TSE);
-        tse.FetchRealtimeQuoteAsync("2330", true, Arg.Any<CancellationToken>())
-           .Returns(new StockQuote { Symbol = "2330", Name = "台積電", Market = MarketType.TSE, LastPrice = 1000m },
-                    new StockQuote { Symbol = "2330", Name = "台積電", Market = MarketType.TSE, LastPrice = 1010m });
+        tse.FetchRealtimeQuoteAsync("2330", Arg.Any<QuoteOptions>(), Arg.Any<CancellationToken>())
+           .Returns(Quote(1000m), Quote(1010m));
         var service = BuildService(tse);
         var observer = Substitute.For<IStockPriceObserver>();
         service.SubscribePriceChanges("2330", observer);
 
-        await service.GetRealtimeQuoteAsync("2330", MarketType.TSE, bypassCache: true);
-        await service.GetRealtimeQuoteAsync("2330", MarketType.TSE, bypassCache: true);
+        await service.GetRealtimeQuoteAsync("2330", MarketType.TSE, QuoteOptions.NoCache);
+        await service.GetRealtimeQuoteAsync("2330", MarketType.TSE, QuoteOptions.NoCache);
 
         observer.Received(1).OnPriceChanged("2330", 1010m, 1000m);
     }
@@ -191,9 +169,8 @@ public class StockMarketServiceTests
     public async Task GetRealtimeQuoteAsync_AnObserverThrows_StillReturnsTheQuote_AndNotifiesTheOthers()
     {
         var tse = FakeSource(MarketType.TSE);
-        tse.FetchRealtimeQuoteAsync("2330", Arg.Any<CancellationToken>())
-           .Returns(new StockQuote { Symbol = "2330", Name = "台積電", Market = MarketType.TSE, LastPrice = 1000m },
-                    new StockQuote { Symbol = "2330", Name = "台積電", Market = MarketType.TSE, LastPrice = 1010m });
+        tse.FetchRealtimeQuoteAsync("2330", Arg.Any<QuoteOptions>(), Arg.Any<CancellationToken>())
+           .Returns(Quote(1000m), Quote(1010m));
         var service = BuildService(tse);
         var faulty = Substitute.For<IStockPriceObserver>();
         faulty.When(o => o.OnPriceChanged(Arg.Any<string>(), Arg.Any<decimal>(), Arg.Any<decimal>()))
@@ -215,7 +192,7 @@ public class StockMarketServiceTests
     private static readonly Dictionary<string, Func<IStockMarketService, CancellationToken, Task<string?>>> Queries = new()
     {
         ["quote"] = async (s, ct) => (await s.GetRealtimeQuoteAsync("2330", MarketType.TSE, ct)).ErrorCode,
-        ["quote-bypass"] = async (s, ct) => (await s.GetRealtimeQuoteAsync("2330", MarketType.TSE, bypassCache: true, ct)).ErrorCode,
+        ["quote-nocache"] = async (s, ct) => (await s.GetRealtimeQuoteAsync("2330", MarketType.TSE, QuoteOptions.NoCache, ct)).ErrorCode,
         ["history"] = async (s, ct) => (await s.GetHistoricalDataAsync(
             "2330", MarketType.TSE, new DateOnly(2025, 9, 1), new DateOnly(2025, 9, 30), ct)).ErrorCode,
         ["list"] = async (s, ct) => (await s.GetStockListAsync(MarketType.TSE, ct: ct)).ErrorCode,
@@ -226,9 +203,7 @@ public class StockMarketServiceTests
     private static IStockDataSource FailingSource(MarketType market, Func<CancellationToken, Exception> error)
     {
         var source = FakeSource(market);
-        source.FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
-              .Returns<StockQuote?>(ci => throw error(ci.Arg<CancellationToken>()));
-        source.FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        source.FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<QuoteOptions>(), Arg.Any<CancellationToken>())
               .Returns<StockQuote?>(ci => throw error(ci.Arg<CancellationToken>()));
         source.FetchHistoricalDataAsync(Arg.Any<string>(), Arg.Any<DateOnly>(), Arg.Any<DateOnly>(), Arg.Any<CancellationToken>())
               .Returns<IReadOnlyList<StockHistory>>(ci => throw error(ci.Arg<CancellationToken>()));
@@ -239,7 +214,7 @@ public class StockMarketServiceTests
 
     [Theory]
     [InlineData("quote")]
-    [InlineData("quote-bypass")]
+    [InlineData("quote-nocache")]
     [InlineData("history")]
     [InlineData("list")]
     [InlineData("all")]
@@ -254,7 +229,7 @@ public class StockMarketServiceTests
 
     [Theory]
     [InlineData("quote")]
-    [InlineData("quote-bypass")]
+    [InlineData("quote-nocache")]
     [InlineData("history")]
     [InlineData("list")]
     [InlineData("all")]
@@ -274,7 +249,7 @@ public class StockMarketServiceTests
     public async Task GetRealtimeQuoteAsync_DefaultMarket_ReturnsSourceNotFound()
     {
         var result = await BuildService(FakeSource(MarketType.TSE), FakeSource(MarketType.OTC))
-            .GetRealtimeQuoteAsync("2330", default);
+            .GetRealtimeQuoteAsync("2330", default(MarketType));
 
         Assert.Equal(MarketType.Unknown, default(MarketType));
         Assert.Equal(StockErrorCodes.SourceNotFound, result.ErrorCode);
@@ -287,12 +262,12 @@ public class StockMarketServiceTests
     {
         var replaced = FakeSource(MarketType.TSE);
         var replacement = FakeSource(MarketType.TSE);
-        replacement.FetchRealtimeQuoteAsync("2330", Arg.Any<CancellationToken>())
-                   .Returns(new StockQuote { Symbol = "2330", Name = "台積電", Market = MarketType.TSE, LastPrice = 1000m });
+        replacement.FetchRealtimeQuoteAsync("2330", Arg.Any<QuoteOptions>(), Arg.Any<CancellationToken>())
+                   .Returns(Quote(1000m));
 
         var result = await BuildService(replaced, replacement).GetRealtimeQuoteAsync("2330", MarketType.TSE);
 
         Assert.True(result.IsSuccess);
-        await replaced.DidNotReceive().FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await replaced.DidNotReceive().FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<QuoteOptions>(), Arg.Any<CancellationToken>());
     }
 }

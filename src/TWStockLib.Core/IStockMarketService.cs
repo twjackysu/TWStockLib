@@ -10,18 +10,12 @@ namespace TWStockLib.Services;
 /// </summary>
 public interface IStockMarketService
 {
-    /// <summary>取得指定股票的即時報價。</summary>
-    Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(
-        string symbol, MarketType market, CancellationToken ct = default);
-
     /// <summary>
-    /// 取得指定股票的即時報價；<paramref name="bypassCache"/> 為 <c>true</c> 時不使用函式庫內部的報價快取，
-    /// 一律向上游查詢（查到的新報價會更新快取）。呼叫端自己已有節流或需要最新值時使用。
-    /// 預設實作忽略此參數、等同上一個方法；<see cref="StockMarketService"/> 已覆寫。
+    /// 取得指定股票的即時報價。預設使用 30 秒的內部快取；需要最新值時傳 <see cref="QuoteOptions.NoCache"/>。
+    /// 只想傳 <see cref="CancellationToken"/> 時可用 <see cref="StockMarketServiceExtensions"/> 的多載。
     /// </summary>
     Task<StockResult<StockQuote>> GetRealtimeQuoteAsync(
-        string symbol, MarketType market, bool bypassCache, CancellationToken ct = default)
-        => GetRealtimeQuoteAsync(symbol, market, ct);
+        string symbol, MarketType market, QuoteOptions? options = null, CancellationToken ct = default);
 
     /// <summary>
     /// 取得指定股票在 <paramref name="from"/> 到 <paramref name="to"/>（含）之間的歷史資料，依日期排序。

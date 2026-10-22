@@ -209,7 +209,7 @@ public class TwStockHttpClientTests
         var history = stock.GetHistoricalDataAsync("2330", MarketType.TSE, new DateOnly(2025, 1, 1), new DateOnly(2025, 4, 30));
         var elapsed = await time.AdvanceUntilCompletedAsync(history, TimeSpan.FromMilliseconds(250));
 
-        Assert.True(history.Result.IsSuccess);
+        Assert.True((await history).IsSuccess);
         Assert.Equal(4, network.Requests.Count);
         Assert.True(elapsed >= TimeSpan.FromSeconds(5), $"只花了 {elapsed}");
     }

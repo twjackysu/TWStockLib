@@ -48,7 +48,7 @@ public class SlidingLogRateLimiterTests
 
         // second 在 first 之後才輪到，等候的計時器在背景建立，因此只斷言下限：最快 t=6（t=1 的許可滑出）
         var waited = await _time.AdvanceUntilCompletedAsync(second, TimeSpan.FromMilliseconds(100));
-        Assert.True(second.Result.IsAcquired);
+        Assert.True((await second).IsAcquired);
         Assert.True(waited >= TimeSpan.FromSeconds(1), $"只多等了 {waited}");
     }
 
@@ -70,7 +70,7 @@ public class SlidingLogRateLimiterTests
         Assert.False(next.IsCompleted);
 
         var waited = await _time.AdvanceUntilCompletedAsync(next, TimeSpan.FromMilliseconds(100));
-        Assert.True(next.Result.IsAcquired);
+        Assert.True((await next).IsAcquired);
         Assert.True(waited >= TimeSpan.FromSeconds(5), $"只等了 {waited}");
         Assert.Equal(2, limiter.GetStatistics()!.CurrentAvailablePermits); // 被取消的請求沒有用掉許可
     }

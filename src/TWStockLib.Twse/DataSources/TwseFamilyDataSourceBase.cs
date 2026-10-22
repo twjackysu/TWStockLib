@@ -1,4 +1,5 @@
 using System.Globalization;
+using Microsoft.Extensions.Options;
 using TWStockLib.Abstractions;
 using TWStockLib.Twse.Http;
 using TWStockLib.Twse.Parsers;
@@ -11,20 +12,21 @@ namespace TWStockLib.Twse.DataSources;
 /// </summary>
 internal abstract class TwseFamilyDataSourceBase : IStockDataSource
 {
-    private static readonly TimeSpan QuoteTtl = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan DailyTtl = TimeSpan.FromDays(1);
-    private static readonly TimeSpan CurrentMonthHistoryTtl = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan TaiwanUtcOffset = TimeSpan.FromHours(8);
 
     protected readonly IStockHttpFetcher Fetcher;
     protected readonly ICacheService Cache;
     private readonly TimeProvider _timeProvider;
+    private readonly TwStockOptions _options;
 
-    protected TwseFamilyDataSourceBase(IStockHttpFetcher fetcher, ICacheService cache, TimeProvider timeProvider)
+    // options 未指定（直接 new 的測試）時使用 TwStockOptions 的預設快取時間
+    protected TwseFamilyDataSourceBase(
+        IStockHttpFetcher fetcher, ICacheService cache, TimeProvider timeProvider, IOptions<TwStockOptions>? options)
     {
         Fetcher = fetcher;
         Cache = cache;
         _timeProvider = timeProvider;
+        _options = options?.Value ?? new TwStockOptions();
     }
 
     public abstract MarketType Market { get; }
@@ -47,8 +49,8 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
         }
 
         return options.BypassCache
-            ? Cache.RefreshAsync(cacheKey, Fetch, QuoteTtl)
-            : Cache.GetOrSetAsync(cacheKey, Fetch, QuoteTtl);
+            ? Cache.RefreshAsync(cacheKey, Fetch, _options.QuoteCacheDuration)
+            : Cache.GetOrSetAsync(cacheKey, Fetch, _options.QuoteCacheDuration);
     }
 
     public async Task<IReadOnlyList<StockHistory>> FetchHistoricalDataAsync(
@@ -78,7 +80,7 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
             var url = $"https://isin.twse.com.tw/isin/C_public.jsp?strMode={IsinStrMode}";
             var html = await Fetcher.GetBig5StringAsync(url, ct);
             return TwseStockParser.ParseStockList(html, Market, includeWarrant);
-        }, DailyTtl);
+        }, _options.StockListCacheDuration);
     }
 
     /// <summary>取得單一月份的歷史資料（含快取），由子類別決定端點與解析方式。</summary>
@@ -94,13 +96,15 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
     }
 
     /// <summary>
-    /// 已結束的月份資料不再變動，快取一天；當月（台灣時間）每個交易日收盤後會多一列，只短暫快取，
+    /// 已結束的月份資料不再變動，快取較久（預設一天）；當月（台灣時間）每個交易日收盤後會多一列，只短暫快取，
     /// 未來月份同理，避免月份開始後仍拿到先前快取的空資料。
     /// </summary>
     private TimeSpan HistoryTtl(DateOnly month)
     {
         var taiwanNow = _timeProvider.GetUtcNow().ToOffset(TaiwanUtcOffset);
         var currentMonth = new DateOnly(taiwanNow.Year, taiwanNow.Month, 1);
-        return new DateOnly(month.Year, month.Month, 1) < currentMonth ? DailyTtl : CurrentMonthHistoryTtl;
+        return new DateOnly(month.Year, month.Month, 1) < currentMonth
+            ? _options.ClosedMonthHistoryCacheDuration
+            : _options.CurrentMonthHistoryCacheDuration;
     }
 }

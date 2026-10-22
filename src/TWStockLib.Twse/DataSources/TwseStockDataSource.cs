@@ -1,4 +1,5 @@
 using System.Globalization;
+using Microsoft.Extensions.Options;
 using TWStockLib.Abstractions;
 using TWStockLib.Twse.Http;
 using TWStockLib.Twse.Parsers;
@@ -6,8 +7,9 @@ using TWStockLib.Twse.Parsers;
 namespace TWStockLib.Twse.DataSources;
 
 /// <summary>上市（TSE，台灣證券交易所）資料來源。</summary>
-internal sealed class TwseStockDataSource(IStockHttpFetcher fetcher, ICacheService cache, TimeProvider timeProvider)
-    : TwseFamilyDataSourceBase(fetcher, cache, timeProvider)
+internal sealed class TwseStockDataSource(
+    IStockHttpFetcher fetcher, ICacheService cache, TimeProvider timeProvider, IOptions<TwStockOptions>? options = null)
+    : TwseFamilyDataSourceBase(fetcher, cache, timeProvider, options)
 {
     public override MarketType Market => MarketType.TSE;
     protected override string MarketKeyPrefix => "tse";

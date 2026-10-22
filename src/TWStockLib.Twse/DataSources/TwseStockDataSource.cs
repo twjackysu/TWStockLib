@@ -14,6 +14,11 @@ public sealed class TwseStockDataSource : TwseFamilyDataSourceBase
         ILogger<TwseStockDataSource> logger)
         : base(fetcher, parser, cache, logger) { }
 
+    public TwseStockDataSource(
+        IStockHttpFetcher fetcher, IStockParser parser, ICacheService cache,
+        ILogger<TwseStockDataSource> logger, TimeProvider timeProvider)
+        : base(fetcher, parser, cache, logger, timeProvider) { }
+
     public override MarketType Market => MarketType.TSE;
     protected override string MarketKeyPrefix => "tse";
     protected override int IsinStrMode => 2;

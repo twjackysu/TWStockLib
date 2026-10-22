@@ -29,4 +29,6 @@ public static class StockErrorCodes
     public const string NotFound = "NOT_FOUND";
     /// <summary>上游連線或回應錯誤。</summary>
     public const string UpstreamError = "UPSTREAM_ERROR";
+    /// <summary>上游在 HttpClient 逾時內沒有回應。</summary>
+    public const string Timeout = "TIMEOUT";
 }

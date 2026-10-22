@@ -14,6 +14,12 @@ namespace TWStockLib.Twse.DataSources;
 /// </summary>
 internal abstract class TwseFamilyDataSourceBase : IStockDataSource
 {
+    /// <summary>
+    /// 一個 MIS 請求最多合併的代號數。實測（2026-10）一次 150 檔可以，200 檔（URL 約 2.5 KB）回 rtcode 9999
+    /// 「參數不足」；取 50 留足餘裕，6 碼代號（ETF、權證）的 URL 也只有約 0.8 KB。
+    /// </summary>
+    internal const int MaxSymbolsPerQuoteRequest = 50;
+
     private static readonly TimeSpan TaiwanUtcOffset = TimeSpan.FromHours(8);
 
     protected readonly IStockHttpFetcher Fetcher;
@@ -45,20 +51,68 @@ internal abstract class TwseFamilyDataSourceBase : IStockDataSource
 
     public Task<StockQuote?> FetchRealtimeQuoteAsync(string symbol, QuoteOptions options, CancellationToken ct = default)
     {
-        var cacheKey = $"realtime_quote_{Market}_{symbol}";
         async Task<StockQuote?> Fetch(CancellationToken token)
-        {
-            // 跳脫讓「&」「#」這類字元改不了其他查詢參數；MIS 會先解碼再以「|」分隔多檔，
-            // 擋下「2330.tw|tse_2317」的是 StockMarketService 的代號格式檢查
-            var exCh = $"{MarketKeyPrefix}_{Uri.EscapeDataString(symbol)}.tw";
-            var url = $"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={exCh}&json=1&delay=0&_={DateTime.UtcNow.Ticks}";
-            var json = await Fetcher.GetStringAsync(url, token);
-            return TwseStockParser.ParseRealtimeQuote(json, Market);
-        }
+            => (await FetchQuotesFromMisAsync([symbol], token)).FirstOrDefault(q => q.Symbol == symbol);
 
         return options.BypassCache
-            ? Cache.RefreshAsync(cacheKey, () => Fetch(ct), _options.QuoteCacheDuration)
-            : Cache.GetOrSetAsync(cacheKey, Fetch, _options.QuoteCacheDuration, ct);
+            ? Cache.RefreshAsync(QuoteCacheKey(symbol), () => Fetch(ct), _options.QuoteCacheDuration)
+            : Cache.GetOrSetAsync(QuoteCacheKey(symbol), Fetch, _options.QuoteCacheDuration, ct);
+    }
+
+    /// <summary>
+    /// 已快取的代號直接取用（<see cref="QuoteOptions.BypassCache"/> 時不取用），其餘每
+    /// <see cref="MaxSymbolsPerQuoteRequest"/> 檔合併成一個 MIS 請求，查到的報價逐檔寫回快取，
+    /// 之後的單檔查詢也拿得到。
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, StockQuote>> FetchRealtimeQuotesAsync(
+        IReadOnlyList<string> symbols, QuoteOptions options, CancellationToken ct = default)
+    {
+        var quotes = new Dictionary<string, StockQuote>(symbols.Count);
+        var toFetch = new List<string>(symbols.Count);
+        foreach (var symbol in symbols)
+        {
+            // 工廠回 null 不會被快取（ICacheService 的約定），這裡只是查快取、不會寫入任何東西；
+            // 用不帶 CancellationToken 的多載，不會加入或發起 single-flight 的載入
+            var cached = options.BypassCache
+                ? null
+                : await Cache.GetOrSetAsync(QuoteCacheKey(symbol), () => Task.FromResult<StockQuote?>(null), _options.QuoteCacheDuration);
+            if (cached is not null)
+                quotes[symbol] = cached;
+            else
+                toFetch.Add(symbol);
+        }
+
+        foreach (var chunk in toFetch.Chunk(MaxSymbolsPerQuoteRequest))
+        {
+            var requested = chunk.ToHashSet();
+            foreach (var quote in await FetchQuotesFromMisAsync(chunk, ct))
+            {
+                if (!requested.Contains(quote.Symbol))
+                    continue;
+
+                await Cache.RefreshAsync(
+                    QuoteCacheKey(quote.Symbol), () => Task.FromResult<StockQuote?>(quote), _options.QuoteCacheDuration);
+                quotes[quote.Symbol] = quote;
+            }
+        }
+
+        return quotes.ToFrozenDictionary();
+    }
+
+    private string QuoteCacheKey(string symbol) => $"realtime_quote_{Market}_{symbol}";
+
+    /// <summary>
+    /// 以一個 MIS 請求查詢多檔：<c>ex_ch</c> 以「|」串接，上游依序每檔回一筆，查無資料的那筆略過。
+    /// 回應中的代號與查詢時大小寫完全相同（MIS 的代號區分大小寫：00631L 查得到、00631l 查不到）。
+    /// </summary>
+    private async Task<IReadOnlyList<StockQuote>> FetchQuotesFromMisAsync(IEnumerable<string> symbols, CancellationToken ct)
+    {
+        // 跳脫讓「&」「#」這類字元改不了其他查詢參數；MIS 會先解碼再以「|」分隔多檔，
+        // 擋下「2330.tw|tse_2317」的是 StockMarketService 的代號格式檢查
+        var exCh = string.Join('|', symbols.Select(symbol => $"{MarketKeyPrefix}_{Uri.EscapeDataString(symbol)}.tw"));
+        var url = $"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={exCh}&json=1&delay=0&_={DateTime.UtcNow.Ticks}";
+        var json = await Fetcher.GetStringAsync(url, ct);
+        return TwseStockParser.ParseRealtimeQuotes(json, Market);
     }
 
     public async Task<IReadOnlyList<StockHistory>> FetchHistoricalDataAsync(

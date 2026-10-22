@@ -10,6 +10,11 @@ public static class StockMarketServiceExtensions
         this IStockMarketService service, string symbol, MarketType market, CancellationToken ct)
         => service.GetRealtimeQuoteAsync(symbol, market, QuoteOptions.Default, ct);
 
+    /// <summary>以預設選項一次取得多檔即時報價，只傳 <see cref="CancellationToken"/>。</summary>
+    public static Task<IReadOnlyDictionary<string, StockResult<StockQuote>>> GetRealtimeQuotesAsync(
+        this IStockMarketService service, IEnumerable<(string Symbol, MarketType Market)> symbols, CancellationToken ct)
+        => service.GetRealtimeQuotesAsync(symbols, QuoteOptions.Default, ct);
+
     /// <summary>
     /// 取得指定市場中屬於 <paramref name="securityTypes"/> 的證券，例如只要普通股與 ETF：
     /// <c>GetStockListAsync(MarketType.TSE, [SecurityType.CommonStock, SecurityType.Etf])</c>。

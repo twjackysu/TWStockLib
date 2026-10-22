@@ -48,6 +48,10 @@ public sealed class StockMarketService : IStockMarketService
             async source => await source.FetchRealtimeQuoteAsync(symbol, options ?? QuoteOptions.Default, ct), ct);
     }
 
+    public Task<IReadOnlyDictionary<string, StockResult<StockQuote>>> GetRealtimeQuotesAsync(
+        IEnumerable<(string Symbol, MarketType Market)> symbols, QuoteOptions? options = null, CancellationToken ct = default)
+        => GetRealtimeQuotesCoreAsync(ValidateTargets(symbols), options ?? QuoteOptions.Default, ct);
+
     public Task<StockResult<IReadOnlyList<StockHistory>>> GetHistoricalDataAsync(
         string symbol, MarketType market, DateOnly from, DateOnly to, CancellationToken ct = default)
     {
@@ -121,6 +125,61 @@ public sealed class StockMarketService : IStockMarketService
 
             await Task.Delay(interval, _timeProvider, ct);
         }
+    }
+
+    /// <summary>依市場分組，每個市場呼叫一次資料來源的批次查詢（各市場同時進行），再把結果攤回每一檔。</summary>
+    private async Task<IReadOnlyDictionary<string, StockResult<StockQuote>>> GetRealtimeQuotesCoreAsync(
+        IReadOnlyList<(string Symbol, MarketType Market)> targets, QuoteOptions options, CancellationToken ct)
+    {
+        var perMarket = await Task.WhenAll(targets
+            .GroupBy(t => t.Market, t => t.Symbol)
+            .Select(group => QueryMarketQuotesAsync(group.Key, group.ToArray(), options, ct)));
+
+        var results = new Dictionary<string, StockResult<StockQuote>>(targets.Count);
+        foreach (var marketResults in perMarket)
+        {
+            foreach (var (symbol, result) in marketResults)
+                results[symbol] = result;
+        }
+        return results.ToFrozenDictionary();
+    }
+
+    private async Task<Dictionary<string, StockResult<StockQuote>>> QueryMarketQuotesAsync(
+        MarketType market, string[] symbols, QuoteOptions options, CancellationToken ct)
+    {
+        var batch = await QueryAsync(market, $"{symbols.Length} 檔即時報價",
+            async source => await source.FetchRealtimeQuotesAsync(symbols, options, ct), ct);
+
+        var results = new Dictionary<string, StockResult<StockQuote>>(symbols.Length);
+        foreach (var symbol in symbols)
+        {
+            if (!batch.IsSuccess)
+                results[symbol] = StockResult<StockQuote>.Fail(batch.ErrorCode, batch.ErrorMessage, batch.Exception);
+            else if (batch.Value.TryGetValue(symbol, out var quote))
+                results[symbol] = StockResult<StockQuote>.Ok(quote);
+            else
+                results[symbol] = StockResult<StockQuote>.Fail(StockErrorCodes.NotFound, $"查無資料：{symbol} 即時報價");
+        }
+        return results;
+    }
+
+    /// <summary>檢查每一檔的代號並去除重複；同一代號指定了不同市場是呼叫端的錯誤。</summary>
+    private static IReadOnlyList<(string Symbol, MarketType Market)> ValidateTargets(
+        IEnumerable<(string Symbol, MarketType Market)> symbols, [CallerArgumentExpression(nameof(symbols))] string? paramName = null)
+    {
+        ArgumentNullException.ThrowIfNull(symbols, paramName);
+
+        var markets = new Dictionary<string, MarketType>();
+        var targets = new List<(string Symbol, MarketType Market)>();
+        foreach (var (symbol, market) in symbols)
+        {
+            ValidateSymbol(symbol, paramName);
+            if (markets.TryAdd(symbol, market))
+                targets.Add((symbol, market));
+            else if (markets[symbol] != market)
+                throw new ArgumentException($"代號 {symbol} 同時指定了 {markets[symbol]} 與 {market} 兩個市場。", paramName);
+        }
+        return targets;
     }
 
     /// <summary>

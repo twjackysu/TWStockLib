@@ -25,7 +25,7 @@ public class TwseFamilyDataSourceTests
         public Task<string> GetBig5StringAsync(string url, CancellationToken ct = default) => throw new NotSupportedException();
     }
 
-    private static TwseStockDataSource Build(FakeFetcher fetcher) =>
+    private static TwseStockDataSource Build(IStockHttpFetcher fetcher) =>
         new(fetcher, new MemoryCacheService(new MemoryCache(new MemoryCacheOptions())), TimeProvider.System);
 
     [Fact]
@@ -261,6 +261,110 @@ public class TwseFamilyDataSourceTests
 
         Assert.Equal(2, fetcher.Requests);
         Assert.All(quotes, q => Assert.Equal(600.00m, q!.LastPrice));
+    }
+
+    // ── 批次報價 ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// 模擬 MIS：依 URL 的 ex_ch 每檔回一筆，<paramref name="unknown"/> 中的代號回佔位資料；
+    /// 價格為 <see cref="Price"/>，每次查詢後可以改。
+    /// </summary>
+    private sealed class FakeMis(params string[] unknown) : IStockHttpFetcher
+    {
+        public List<string[]> Requests { get; } = [];
+        public List<string> ExChs { get; } = [];
+        public decimal Price { get; set; } = 600m;
+
+        public Task<string> GetStringAsync(string url, CancellationToken ct = default)
+        {
+            var exCh = Uri.UnescapeDataString(url.Split("ex_ch=")[1].Split('&')[0]);
+            var symbols = exCh.Split('|').Select(e => e[4..^3]).ToArray();   // tse_2330.tw → 2330
+            ExChs.Add(exCh);
+            Requests.Add(symbols);
+
+            var items = symbols.Select(s => unknown.Contains(s)
+                ? """{"tv":"-","s":"-","c":"","z":"-"}"""
+                : $$"""{"c":"{{s}}","n":"{{s}}","z":"{{Price.ToString(CultureInfo.InvariantCulture)}}"}""");
+            return Task.FromResult($$"""{"msgArray":[{{string.Join(',', items)}}],"rtcode":"0000","rtmessage":"OK"}""");
+        }
+
+        public Task<string> GetBig5StringAsync(string url, CancellationToken ct = default) => throw new NotSupportedException();
+    }
+
+    [Fact]
+    public async Task FetchRealtimeQuotesAsync_QueriesEverySymbolInOneRequest()
+    {
+        var mis = new FakeMis(unknown: "9999");
+
+        var quotes = await Build(mis).FetchRealtimeQuotesAsync(["2330", "9999", "2317"], QuoteOptions.Default);
+
+        var request = Assert.Single(mis.Requests);
+        Assert.Equal(["2330", "9999", "2317"], request);
+        Assert.Equal(["2317", "2330"], quotes.Keys.Order());
+        Assert.Equal(600m, quotes["2330"].LastPrice);
+    }
+
+    [Fact]
+    public async Task FetchRealtimeQuotesAsync_SplitsLargeBatches()
+    {
+        var mis = new FakeMis();
+        var symbols = Enumerable.Range(1000, 120).Select(i => i.ToString(CultureInfo.InvariantCulture)).ToArray();
+
+        var quotes = await Build(mis).FetchRealtimeQuotesAsync(symbols, QuoteOptions.Default);
+
+        Assert.Equal([50, 50, 20], mis.Requests.Select(r => r.Length));
+        Assert.Equal(120, quotes.Count);
+    }
+
+    [Fact]
+    public async Task FetchRealtimeQuotesAsync_SkipsCachedSymbols_AndCachesWhatItFetched()
+    {
+        var mis = new FakeMis();
+        var source = Build(mis);
+        await source.FetchRealtimeQuoteAsync("2330", QuoteOptions.Default);
+
+        await source.FetchRealtimeQuotesAsync(["2330", "2317"], QuoteOptions.Default);
+        var single = await source.FetchRealtimeQuoteAsync("2317", QuoteOptions.Default);
+
+        Assert.Equal([["2330"], ["2317"]], mis.Requests);
+        Assert.Equal(600m, single!.LastPrice);
+    }
+
+    [Fact]
+    public async Task FetchRealtimeQuotesAsync_NoCache_QueriesEverySymbol_AndRefreshesTheCache()
+    {
+        var mis = new FakeMis();
+        var source = Build(mis);
+        await source.FetchRealtimeQuotesAsync(["2330", "2317"], QuoteOptions.Default);
+        mis.Price = 610m;
+
+        var fresh = await source.FetchRealtimeQuotesAsync(["2330", "2317"], QuoteOptions.NoCache);
+        var later = await source.FetchRealtimeQuoteAsync("2330", QuoteOptions.Default);
+
+        Assert.Equal(2, mis.Requests.Count);
+        Assert.Equal(610m, fresh["2317"].LastPrice);
+        Assert.Equal(610m, later!.LastPrice);
+    }
+
+    [Fact]
+    public async Task FetchRealtimeQuotesAsync_ARejectedRequest_Throws()
+    {
+        var fetcher = new FakeFetcher("""{"rtcode":"9999","rtmessage":"參數不足"}""");
+
+        await Assert.ThrowsAsync<HttpRequestException>(
+            () => Build(fetcher).FetchRealtimeQuotesAsync(["2330", "2317"], QuoteOptions.Default));
+    }
+
+    [Fact]
+    public async Task FetchRealtimeQuotesAsync_UsesTheMarketPrefix()
+    {
+        var mis = new FakeMis();
+        var otc = new TpexStockDataSource(mis, new MemoryCacheService(new MemoryCache(new MemoryCacheOptions())), TimeProvider.System);
+
+        var quotes = await otc.FetchRealtimeQuotesAsync(["6510", "8069"], QuoteOptions.Default);
+
+        Assert.Equal("otc_6510.tw|otc_8069.tw", Assert.Single(mis.ExChs));
+        Assert.All(quotes.Values, q => Assert.Equal(MarketType.OTC, q.Market));
     }
 
     // ── 代號跳脫 ──────────────────────────────────────────────────────────────

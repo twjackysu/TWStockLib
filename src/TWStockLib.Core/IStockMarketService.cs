@@ -15,6 +15,28 @@ public interface IStockMarketService
         string symbol, MarketType market, QuoteOptions? options = null, CancellationToken ct = default);
 
     /// <summary>
+    /// 一次取得多檔即時報價。同一市場的代號合併查詢（內建來源每 50 檔一個 MIS 請求），比逐檔呼叫
+    /// <see cref="GetRealtimeQuoteAsync(string, MarketType, QuoteOptions?, CancellationToken)"/> 省下大量請求；
+    /// 快取以每一檔為單位，與單檔查詢共用，已快取的代號不會再查上游（<see cref="QuoteOptions.NoCache"/> 除外）。
+    /// </summary>
+    /// <returns>
+    /// 以代號為 key、每個傳入的代號恰好一筆的字典（重複的代號只查一次），每一檔各自成功或失敗：
+    /// 查無此代號、或代號不屬於指定的市場時為 <c>NOT_FOUND</c>；不支援的市場為 <c>SOURCE_NOT_FOUND</c>；
+    /// 上游失敗時，同一市場這次查詢的每一檔都是同一個失敗結果（<c>UPSTREAM_ERROR</c> / <c>TIMEOUT</c> / <c>PARSE_ERROR</c>）。
+    /// 字典不保證順序，請以自己的代號清單逐一取值。
+    /// </returns>
+    /// <exception cref="ArgumentException">代號格式不合法，或同一代號指定了兩個不同的市場。</exception>
+    /// <example>
+    /// <code>
+    /// var quotes = await stock.GetRealtimeQuotesAsync([("2330", MarketType.TSE), ("6510", MarketType.OTC)]);
+    /// if (quotes["2330"].TryGetValue(out var tsmc))
+    ///     Console.WriteLine(tsmc.LastPrice);
+    /// </code>
+    /// </example>
+    Task<IReadOnlyDictionary<string, StockResult<StockQuote>>> GetRealtimeQuotesAsync(
+        IEnumerable<(string Symbol, MarketType Market)> symbols, QuoteOptions? options = null, CancellationToken ct = default);
+
+    /// <summary>
     /// 取得指定股票在 <paramref name="from"/> 到 <paramref name="to"/>（含）之間的歷史資料，依日期排序。
     /// 以月為單位向上游查詢。
     /// </summary>

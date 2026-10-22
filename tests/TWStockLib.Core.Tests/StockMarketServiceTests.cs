@@ -61,17 +61,77 @@ public class StockMarketServiceTests
     }
 
     [Fact]
-    public async Task GetRealtimeQuoteAsync_SourceThrows_ReturnsUpstreamError()
+    public async Task GetRealtimeQuoteAsync_SourceThrows_ReturnsUpstreamError_WithTheCause()
     {
         var tse = FakeSource(MarketType.TSE);
+        var cause = new HttpRequestException("boom");
         tse.FetchRealtimeQuoteAsync(Arg.Any<string>(), Arg.Any<QuoteOptions>(), Arg.Any<CancellationToken>())
-           .Returns<StockQuote?>(_ => throw new HttpRequestException("boom"));
+           .Returns<StockQuote?>(_ => throw cause);
 
         var result = await BuildService(tse).GetRealtimeQuoteAsync("2330", MarketType.TSE);
 
         Assert.False(result.IsSuccess);
         Assert.Equal(StockErrorCodes.UpstreamError, result.ErrorCode);
         Assert.Contains("boom", result.ErrorMessage);
+        Assert.Same(cause, result.Exception);
+    }
+
+    [Fact]
+    public async Task GetHistoricalDataAsync_UnreadableUpstreamResponse_ReturnsParseError()
+    {
+        // 例如被上游擋下時回傳的是 HTML 錯誤頁，不是 JSON
+        var tse = FakeSource(MarketType.TSE);
+        tse.FetchHistoricalDataAsync(Arg.Any<string>(), Arg.Any<DateOnly>(), Arg.Any<DateOnly>(), Arg.Any<CancellationToken>())
+           .Returns<IReadOnlyList<StockHistory>>(_ => throw new System.Text.Json.JsonException("'<' is an invalid start of a value."));
+
+        var result = await BuildService(tse).GetHistoricalDataAsync(
+            "2330", MarketType.TSE, new DateOnly(2025, 9, 1), new DateOnly(2025, 9, 30));
+
+        Assert.Equal(StockErrorCodes.ParseError, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task GetAllStockListAsync_AMarketFails_ReturnsThatFailure()
+    {
+        var tse = FakeSource(MarketType.TSE);
+        var otc = FakeSource(MarketType.OTC);
+        tse.FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
+           .Returns(new Dictionary<string, StockData>());
+        otc.FetchStockListAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
+           .Returns<IReadOnlyDictionary<string, StockData>>(_ => throw new HttpRequestException("boom"));
+
+        var result = await BuildService(tse, otc).GetAllStockListAsync();
+
+        Assert.Equal(StockErrorCodes.UpstreamError, result.ErrorCode);
+    }
+
+    // ── 參數檢查 ──────────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("  ")]
+    public async Task BlankSymbols_AreRejected(string? symbol)
+    {
+        var service = BuildService(FakeSource(MarketType.TSE));
+
+        await Assert.ThrowsAnyAsync<ArgumentException>(() => service.GetRealtimeQuoteAsync(symbol!, MarketType.TSE));
+        await Assert.ThrowsAnyAsync<ArgumentException>(() => service.GetHistoricalDataAsync(
+            symbol!, MarketType.TSE, new DateOnly(2025, 9, 1), new DateOnly(2025, 9, 30)));
+    }
+
+    [Fact]
+    public void GetHistoricalDataAsync_FromAfterTo_IsRejectedBeforeAnyQuery()
+    {
+        var tse = FakeSource(MarketType.TSE);
+
+        // 呼叫當下就拋出，不必等到 await
+        Assert.Throws<ArgumentException>(() =>
+        {
+            _ = BuildService(tse).GetHistoricalDataAsync(
+                "2330", MarketType.TSE, new DateOnly(2025, 9, 30), new DateOnly(2025, 9, 1));
+        });
+        tse.DidNotReceiveWithAnyArgs().FetchHistoricalDataAsync(default!, default, default, default);
     }
 
     // ── GetAllStockList 合併 ──────────────────────────────────────────────────

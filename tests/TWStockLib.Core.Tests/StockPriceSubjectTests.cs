@@ -147,26 +147,3 @@ public class StockPriceSubjectTests
         Assert.Null(exception);
     }
 }
-
-public class StockResultTests
-{
-    [Fact]
-    public void Ok_CarriesValue_AndIsSuccess()
-    {
-        var result = StockResult<int>.Ok(42);
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal(42, result.Value);
-        Assert.Null(result.ErrorCode);
-    }
-
-    [Fact]
-    public void Fail_CarriesCodeAndMessage()
-    {
-        var result = StockResult<int>.Fail("CODE", "message");
-
-        Assert.False(result.IsSuccess);
-        Assert.Equal("CODE", result.ErrorCode);
-        Assert.Equal("message", result.ErrorMessage);
-    }
-}

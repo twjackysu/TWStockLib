@@ -3,7 +3,9 @@ name: CI
 on:
   workflow_dispatch:
   push:
-    branches: [ master, main ]
+    # release/**：維護分支（如 release/2.x）。push 事件用的是該分支自己的 ci.yml，
+    # 既有的 release 分支要同步這段才會生效；之後從 master 開的 release 分支自動帶上。
+    branches: [ master, main, 'release/**' ]
   pull_request:
     branches: [ master, main ]
 
